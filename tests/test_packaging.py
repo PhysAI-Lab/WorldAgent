@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
-REPO = ROOT.parent
+REPO = ROOT  # the plugin is the repository root
 
 
 class PackagingTest(unittest.TestCase):
@@ -14,7 +14,7 @@ class PackagingTest(unittest.TestCase):
         claude = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())
         codex = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
         self.assertEqual((claude["name"], claude["version"]), (codex["name"], codex["version"]))
-        self.assertIsNone(codex["license"])
+        self.assertEqual(("MIT", "MIT"), (claude["license"], codex["license"]))
         self.assertEqual((ROOT / "skills").resolve(), (ROOT / codex["skills"]).resolve())
 
     def test_catalogs_resolve_to_same_plugin(self):
