@@ -1,0 +1,20 @@
+{
+  "description": "End-to-end test cases: each request is given to the agent once, and the agent runs the whole pipeline (spec, build and bake, verify and refine, final render, promote) without questions.",
+  "cases": [
+    {
+      "id": "ring_chain",
+      "kind": "rigid body, interlocking contact",
+      "request": "Seven rigid iron torus rings, each with a major radius of 6 cm and a tube radius of 1.2 cm, mass 180 g each, hang interlocked in a vertical chain from a static steel hook fixed to the ceiling at height 2 m. The rings are pre-positioned so each ring passes through the hole of the ring above and below it. The chain is released from a slightly laterally displaced position (top ring offset 5 cm from centre) and swings under gravity until all rings hang at rest in a straight vertical line. No ring may separate from or pass through a neighbouring ring at any frame. Simulation runs for 5 seconds at 60 fps. Camera is static, front-on, 1.5 m from the chain at mid-height, framing the full chain. Final render 1920x1080 Cycles."
+    },
+    {
+      "id": "domino_chain",
+      "kind": "rigid body, chain reaction with a kinematic pusher",
+      "request": "Fifteen identical pine dominoes (4 cm × 2 cm × 10 cm, 15 g each), spaced 3.5 cm apart, stand upright in a straight line on a flat oak table. A small cylindrical pusher taps the first domino at the top edge, starting the cascade. The chain reaction must reach the fifteenth domino within 4 seconds of the first falling, and all dominoes must be at rest on the table within 6 seconds. Camera is static, side-on at mid-height 1.2 metres from the centre of the line, framing all fifteen dominoes in a single shot. Final 1920×1080 Cycles render."
+    },
+    {
+      "id": "hotel_small",
+      "kind": "Mantaflow liquid coupled with a rigid body",
+      "request": "A short hotel corridor about 6 m long and 2.5 m wide with a red carpet runner, wood-panelled walls, one guest-room door and one brass wall sconce on each side, and a double door at the far end. Dark red liquid bursts out from behind the double door and spreads along the floor, pushing one suitcase so it slides and turns. 3 seconds at 24 fps. Use Blender Mantaflow for the liquid and a rigid body for the suitcase."
+    }
+  ]
+}

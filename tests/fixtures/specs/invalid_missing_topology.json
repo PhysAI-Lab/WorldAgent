@@ -1,0 +1,210 @@
+{
+  "contract": {
+    "fps": 24,
+    "frame_range": [
+      1,
+      240
+    ],
+    "story": {
+      "long_form": false,
+      "prompt_length_chars": 92,
+      "required_beat_count": 4,
+      "minimum_duration_seconds": 10,
+      "duration_formula": "4 beats, each at least its readable minimum, at 24 fps",
+      "beats": [
+        {
+          "id": "establish",
+          "prompt_clause": "a quiet warehouse aisle with a loaded shelf",
+          "owner": "static scene and camera",
+          "frame_interval": [
+            1,
+            48
+          ],
+          "minimum_readable_seconds": 2,
+          "depends_on": [],
+          "pass_predicate": "shelf and both crates visible and at rest",
+          "status": "unknown"
+        },
+        {
+          "id": "tip",
+          "prompt_clause": "the shelf tips forward",
+          "owner": "keyed shelf rotation input",
+          "frame_interval": [
+            49,
+            96
+          ],
+          "minimum_readable_seconds": 2,
+          "depends_on": [
+            "establish"
+          ],
+          "pass_predicate": "shelf top moves forward at least 0.3 m",
+          "status": "unknown"
+        },
+        {
+          "id": "fall",
+          "prompt_clause": "two crates slide off and fall",
+          "owner": "Bullet rigid bodies",
+          "frame_interval": [
+            97,
+            168
+          ],
+          "minimum_readable_seconds": 3,
+          "depends_on": [
+            "tip"
+          ],
+          "pass_predicate": "both crates leave the shelf after it tips and reach the floor",
+          "status": "unknown"
+        },
+        {
+          "id": "settle",
+          "prompt_clause": "the crates come to rest in the loading bay",
+          "owner": "Bullet rigid bodies",
+          "frame_interval": [
+            169,
+            240
+          ],
+          "minimum_readable_seconds": 3,
+          "depends_on": [
+            "fall"
+          ],
+          "pass_predicate": "crate speed below 0.05 m/s for the last second",
+          "status": "unknown"
+        }
+      ]
+    }
+  },
+  "object_contracts": [
+    {
+      "name": "floor",
+      "role": "structural_floor",
+      "visible_mesh": "floor",
+      "simulation_mesh": "floor",
+      "proxy": null,
+      "dimensions_m": [
+        12.0,
+        6.0,
+        0.3
+      ],
+      "mass_kg": null,
+      "density_kg_m3": null,
+      "initial_support": "foundation",
+      "collision": {
+        "representation": "evaluated mesh",
+        "margin_m": 0,
+        "self_collision": "none"
+      },
+      "solver_owner": "fixed scene",
+      "allowed_inputs": [],
+      "solver_owned_outputs": [],
+      "frame_range": [
+        1,
+        240
+      ],
+      "acceptance": [
+        "zero interpenetration across full range",
+        "finite evaluated coordinates"
+      ]
+    },
+    {
+      "name": "shelf",
+      "role": "steel_shelf",
+      "visible_mesh": "shelf",
+      "simulation_mesh": "shelf",
+      "proxy": null,
+      "dimensions_m": [
+        2.0,
+        0.6,
+        2.2
+      ],
+      "mass_kg": null,
+      "density_kg_m3": null,
+      "initial_support": "floor",
+      "collision": {
+        "representation": "evaluated mesh",
+        "margin_m": 0,
+        "self_collision": "none"
+      },
+      "solver_owner": "kinematic input",
+      "allowed_inputs": [
+        "keyed rotation"
+      ],
+      "solver_owned_outputs": [],
+      "frame_range": [
+        1,
+        240
+      ],
+      "acceptance": [
+        "zero interpenetration across full range",
+        "finite evaluated coordinates"
+      ]
+    },
+    {
+      "name": "crate_a",
+      "role": "wooden_crate",
+      "visible_mesh": "crate_a",
+      "simulation_mesh": "crate_a",
+      "proxy": null,
+      "dimensions_m": [
+        0.5,
+        0.4,
+        0.4
+      ],
+      "mass_kg": 40.0,
+      "density_kg_m3": 500,
+      "initial_support": "shelf",
+      "collision": {
+        "representation": "evaluated mesh",
+        "margin_m": 0,
+        "self_collision": "none"
+      },
+      "solver_owner": "Bullet rigid body",
+      "allowed_inputs": [],
+      "solver_owned_outputs": [
+        "location",
+        "rotation"
+      ],
+      "frame_range": [
+        1,
+        240
+      ],
+      "acceptance": [
+        "zero interpenetration across full range",
+        "finite evaluated coordinates"
+      ]
+    },
+    {
+      "name": "crate_b",
+      "role": "wooden_crate",
+      "visible_mesh": "crate_b",
+      "simulation_mesh": "crate_b",
+      "proxy": null,
+      "dimensions_m": [
+        0.4,
+        0.4,
+        0.3
+      ],
+      "mass_kg": 24.0,
+      "density_kg_m3": 500,
+      "initial_support": "shelf",
+      "collision": {
+        "representation": "evaluated mesh",
+        "margin_m": 0,
+        "self_collision": "none"
+      },
+      "solver_owner": "Bullet rigid body",
+      "allowed_inputs": [],
+      "solver_owned_outputs": [
+        "location",
+        "rotation"
+      ],
+      "frame_range": [
+        1,
+        240
+      ],
+      "acceptance": [
+        "zero interpenetration across full range",
+        "finite evaluated coordinates"
+      ]
+    }
+  ]
+}

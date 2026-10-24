@@ -1,0 +1,57 @@
+{
+  "requirements_matrix": [
+    {
+      "id": "crate_geometry",
+      "text": "Crates and shelf have real geometry and support",
+      "category": "target_asset_realism",
+      "pass_predicate": "Static audit reports zero penetration and zero unsupported objects",
+      "status": "pass",
+      "evidence": [
+        "reports/verify_crate_geometry_20261018T000000Z.json"
+      ],
+      "verified_by": "src/verify_crate_geometry.py",
+      "input_hashes": {
+        ".work/candidates/c01/scene.blend": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "penetration",
+      "text": "Zero interpenetration across the full range",
+      "category": "physics",
+      "owner": "all solvers",
+      "stage": "2-5",
+      "pass_predicate": "Narrow-phase signed depth <= 0 for every reachable pair on every frame",
+      "status": "fail",
+      "evidence": [
+        "reports/verify_penetration_20261018T000000Z.json"
+      ],
+      "first_failure": {
+        "candidate": "c02",
+        "frame": 131,
+        "pair": [
+          "crate_a",
+          "floor"
+        ]
+      },
+      "reason": "crate_a sinks into the floor on impact",
+      "corrective_action": "Increase rigid-body substeps",
+      "first_revision": "c01",
+      "latest_verified_revision": "c02"
+    },
+    {
+      "id": "fall",
+      "text": "Both crates fall after the shelf tips",
+      "category": "hard_gate",
+      "pass_predicate": "crates leave the shelf after frame 97",
+      "status": "unknown"
+    },
+    {
+      "id": "liquid_spill",
+      "text": "Spilled liquid surface",
+      "category": "physics",
+      "pass_predicate": "Surface cache complete for every frame",
+      "status": "blocked",
+      "reason": "FLIP Fluids add-on not installed"
+    }
+  ]
+}

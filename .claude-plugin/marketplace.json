@@ -1,0 +1,13 @@
+{
+  "name": "worldagent",
+  "owner": {
+    "name": "PhysAILab"
+  },
+  "description": "WorldAgent: build physically grounded Blender scenes whose requirements are measured by verifiers.",
+  "plugins": [
+    {
+      "name": "worldagent",
+      "source": "./"
+    }
+  ]
+}

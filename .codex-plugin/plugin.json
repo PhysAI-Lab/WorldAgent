@@ -1,0 +1,11 @@
+{
+  "name": "worldagent",
+  "version": "0.1.0",
+  "description": "Build physically grounded Blender scenes whose requirements are measured, not claimed: a world spec, per-requirement verifiers run in a fresh Blender process, and a gate that guards the final scene.",
+  "license": null,
+  "skills": "./skills",
+  "interface": {
+    "displayName": "WorldAgent",
+    "shortDescription": "Build and verify physically grounded Blender scenes"
+  }
+}

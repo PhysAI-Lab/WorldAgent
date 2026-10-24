@@ -1,0 +1,62 @@
+{
+  "name": "worldagent",
+  "version": "0.1.0",
+  "author": {"name": "PhysAILab"},
+  "description": "Build physically grounded Blender scenes whose requirements are measured, not claimed: a world spec, per-requirement verifiers run in a fresh Blender process, and a gate that guards the final scene.",
+  "keywords": [
+    "blender",
+    "physics",
+    "simulation",
+    "verification"
+  ],
+  "userConfig": {
+    "blender_path": {
+      "type": "file",
+      "title": "Blender executable",
+      "description": "Blender 5.1 executable. Leave empty to use WORLDAGENT_BLENDER, `blender` on PATH, or the usual install location for your OS."
+    },
+    "flip_addon_path": {
+      "type": "directory",
+      "title": "FLIP Fluids folder",
+      "description": "Folder that contains flip_fluids_addon (your own licensed FLIP Fluids 1.8.8). Leave empty to look in Blender's user add-on and extension folders; without it, FLIP requirements are blocked."
+    },
+    "flip_installer": {
+      "type": "file",
+      "title": "FLIP Fluids installer (optional)",
+      "description": "The FLIP Fluids installer zip, to check it against the plugin's SHA256SUMS.txt at session start."
+    },
+    "render_device": {
+      "type": "string",
+      "title": "Render device",
+      "description": "Cycles device for the final render: OPTIX, CUDA, HIP, METAL, ONEAPI, ANY_GPU (first available GPU) or CPU. Leave empty for OPTIX."
+    },
+    "render_resolution": {
+      "type": "string",
+      "title": "Final render resolution",
+      "description": "WIDTHxHEIGHT for the final render, e.g. 1280x720. Leave empty for 1920x1080."
+    },
+    "render_samples": {
+      "type": "number",
+      "title": "Render samples",
+      "description": "Cycles samples for previews and the final render. Leave empty to use each scene's own setting.",
+      "min": 1
+    },
+    "asset_library_path": {
+      "type": "directory",
+      "title": "Asset library folder (optional)",
+      "description": "Local folder of textures and models to use before building assets procedurally, e.g. the original toolkit's terrain_textures/, road_textures/ and vegetation_3d/. Leave empty to use WORLDAGENT_ASSET_LIBRARY, or none."
+    },
+    "memory_budget_gb": {
+      "type": "number",
+      "title": "Memory budget per Blender process (GB)",
+      "description": "Peak memory a single Blender process may use. Leave empty to follow the skill's memory-safety rules as written.",
+      "min": 1
+    },
+    "time_budget_hours": {
+      "type": "number",
+      "title": "Time budget for /worldagent:run (hours)",
+      "description": "Wall-clock time /worldagent:run may spend on one case before it stops refining, renders its best candidate, and reports the case as limited. Leave empty for 3 hours.",
+      "min": 0.25
+    }
+  }
+}

@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldagent/schemas/world_spec.schema.json",
+  "title": "World spec",
+  "description": "Structured world specification inside the case manifest.json: story beats under contract.story, entity contracts under object_contracts, scene graph under topology [paper A.1.1]. Field names follow the experiment case outputs; where they disagree, the majority name is used. Other manifest keys are allowed.",
+  "type": "object",
+  "required": ["contract", "object_contracts", "topology"],
+  "properties": {
+    "contract": {
+      "type": "object",
+      "required": ["story"],
+      "properties": {
+        "story": { "$ref": "#/$defs/story" }
+      }
+    },
+    "object_contracts": {
+      "description": "Entity contracts, one per object whose motion, deformation, emission, or contact is part of the claim [paper A.1.1 'Entity contracts'; non-penetration-contract.en.md].",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/object_contract" }
+    },
+    "topology": { "$ref": "#/$defs/topology" }
+  },
+  "$defs": {
+    "frame_interval": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "integer", "minimum": 0 }
+      ],
+      "items": false,
+      "minItems": 2,
+      "description": "[start, end] frames, inclusive [paper A.1.1 'inspection interval']."
+    },
+    "story": {
+      "description": "World story [paper A.1.1; simulation-workflow.en.md 1.2].",
+      "type": "object",
+      "required": ["beats"],
+      "properties": {
+        "long_form": { "type": "boolean" },
+        "prompt_length_chars": { "type": "integer", "minimum": 0 },
+        "required_beat_count": { "type": "integer", "minimum": 0 },
+        "minimum_duration_seconds": { "type": "number", "minimum": 0 },
+        "duration_formula": { "type": "string" },
+        "preroll_seconds": { "type": "number", "minimum": 0 },
+        "establishment_seconds": { "type": "number", "minimum": 0 },
+        "aftermath_seconds": { "type": "number", "minimum": 0 },
+        "beats": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/beat" }
+        }
+      }
+    },
+    "beat": {
+      "description": "One story beat [paper A.1.1; skill.md:74 story_contract].",
+      "type": "object",
+      "required": ["id", "prompt_clause", "owner", "frame_interval", "pass_predicate"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "prompt_clause": { "type": "string", "minLength": 1, "description": "Prompt clause this beat covers [skill.md:74]." },
+        "owner": { "type": "string", "minLength": 1, "description": "Responsible solver or input, free text, e.g. 'Mantaflow gravity over 3 physical steps' [paper A.1.1]." },
+        "frame_interval": { "$ref": "#/$defs/frame_interval" },
+        "minimum_readable_seconds": { "type": "number", "minimum": 0, "description": "[skill.md:74 'minimum readable duration']" },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Beat ids that must occur first [skill.md:74 'order/dependency']."
+        },
+        "allowed_inputs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Keyed forces, emitters, switches, or kinematic boundaries that may drive this beat [simulation-workflow.en.md 1.2]."
+        },
+        "solved_outputs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "pass_predicate": { "type": "string", "minLength": 1, "description": "Checkable required outcome [paper A.1.1 'predicate']." },
+        "evidence": { "type": "string", "description": "Camera and numeric evidence source [skill.md:74]." },
+        "status": {
+          "type": "string",
+          "enum": ["pass", "fail", "unknown", "blocked"],
+          "description": "[values from skill.md:47, simulation-workflow.en.md:87,425]"
+        }
+      }
+    },
+    "object_contract": {
+      "type": "object",
+      "required": ["name", "role", "solver_owner", "visible_mesh", "simulation_mesh", "dimensions_m", "acceptance"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "Blender object name." },
+        "role": { "type": "string", "description": "[non-penetration-contract.en.md Identity]" },
+        "solver_owner": { "type": "string", "description": "The one solver that owns the claimed output, free text, e.g. 'fixed authored environment' [non-penetration-contract.en.md Solver ownership]." },
+        "visible_mesh": { "type": "string" },
+        "simulation_mesh": { "type": "string" },
+        "proxy": { "type": ["string", "null"], "description": "Documented proxy, null if none." },
+        "dimensions_m": {
+          "type": "array",
+          "items": { "type": "number", "exclusiveMinimum": 0 },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "[paper A.2.1 scale plausibility]"
+        },
+        "mass_kg": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "density_kg_m3": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "initial_support": { "type": "string", "description": "Supporting object name or 'foundation' [non-penetration-contract.en.md support chain]." },
+        "collision": {
+          "type": "object",
+          "properties": {
+            "representation": { "type": "string" },
+            "margin_m": { "type": "number", "minimum": 0 },
+            "self_collision": { "type": ["string", "boolean"] }
+          }
+        },
+        "allowed_inputs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "solver_owned_outputs": { "type": "array", "items": { "type": "string" } },
+        "frame_range": { "$ref": "#/$defs/frame_interval" },
+        "acceptance": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Acceptance conditions, e.g. 'zero interpenetration across full range'."
+        }
+      }
+    },
+    "topology": {
+      "description": "Scene graph: regions, connections, support, solver coupling [paper A.1.1 'Scene graph'; skill.md:75]. Cases may use other shapes.",
+      "type": "object",
+      "required": ["regions", "edges"],
+      "properties": {
+        "regions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              { "type": "string", "description": "from region" },
+              { "type": "string", "description": "connection, e.g. 'three_steps', 'double_portal', 'open'" },
+              { "type": "string", "description": "to region" }
+            ],
+            "items": false,
+            "minItems": 3
+          },
+          "description": "Each edge is [from, connection, to] [paper A.2.1 navigability]."
+        },
+        "support": { "type": "string" },
+        "coupling": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

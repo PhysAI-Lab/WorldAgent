@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldagent/schemas/requirements.schema.json",
+  "title": "Requirements matrix",
+  "description": "requirements_matrix inside the case manifest.json [simulation-workflow.en.md 1, 13.1]. A candidate is complete only when every row is pass [simulation-workflow.en.md 13.3]. Row fields follow 13.1 and the case outputs; fields marked 'plugin' are added so the gate can tell measured and current evidence from stale or unmeasured claims. Other manifest keys are allowed.",
+  "type": "object",
+  "required": ["requirements_matrix"],
+  "properties": {
+    "requirements_matrix": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/row" }
+    }
+  },
+  "$defs": {
+    "row": {
+      "type": "object",
+      "required": ["id", "text", "category", "pass_predicate", "status"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Story rows reuse the beat id." },
+        "text": { "type": "string", "minLength": 1, "description": "Requirement text [13.1]." },
+        "category": {
+          "type": "string",
+          "enum": ["target_asset_realism", "scene", "physics", "story_time", "materials", "camera", "media", "delivery"],
+          "description": "[13.1 category list]"
+        },
+        "covers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "(plugin) Ids of the contract.story.beats this row verifies. Without covers, a row covers the beat whose id equals the row id, if one exists; a row may cover several beats and a beat may be covered by several rows. The gate fails when a beat has no covering row or covers names a beat that does not exist [paper A.1.1 Specification audit: missing requirements remain unverified; paper A.2: matrix rows cover the spec's requirements; simulation-workflow.en.md 1.2 empty missing_beats, 13.1]."
+        },
+        "owner": { "type": "string" },
+        "stage": { "type": "string", "description": "Pipeline stage, e.g. '1E', '2-5'." },
+        "pass_predicate": { "type": "string", "minLength": 1, "description": "Pass threshold [13.1]." },
+        "status": {
+          "type": "string",
+          "enum": ["pass", "fail", "unknown", "blocked", "stale"],
+          "description": "pass/fail/unknown/blocked [skill.md:47; simulation-workflow.en.md:87,425]. stale (plugin): the row was measured, but an input it was measured on has changed, so it must be re-run [paper A.2.2 Feedback and acceptance, selective invalidation]."
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Evidence paths (reports, renders) [13.1]."
+        },
+        "first_failure": {
+          "type": "object",
+          "description": "[13.1 'failed frame/object']",
+          "properties": {
+            "candidate": { "type": "string" },
+            "frame": { "type": "integer", "minimum": 0 },
+            "pair": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2 },
+            "object": { "type": "string" },
+            "value": { "type": "number", "description": "Measured value, e.g. penetration depth [non-penetration-contract.en.md]." }
+          },
+          "anyOf": [{ "required": ["frame"] }, { "required": ["pair"] }, { "required": ["object"] }]
+        },
+        "reason": { "type": "string", "description": "Why the row has its current status." },
+        "corrective_action": { "type": "string", "description": "[13.1 'next corrective action']" },
+        "first_revision": { "type": "string", "description": "[13.1 'first-discovered version']" },
+        "latest_verified_revision": { "type": ["string", "null"], "description": "[13.1 'most recent validation version']" },
+        "candidate": { "type": "string", "description": "[13.1 'final candidate path']" },
+        "verified_by": { "type": "string", "description": "(plugin) Script that measured the status. A pass with no measuring script is not evidence [skill.md 'A successful Blender operator is not evidence']." },
+        "input_hashes": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "description": "(plugin) SHA-256 of each input the evidence was measured on (candidate .blend, cache, manifest, and the verifier script itself), keyed by path. A mismatch makes the row stale."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "pass" } } },
+          "then": {
+            "required": ["evidence", "verified_by", "input_hashes"],
+            "properties": { "evidence": { "minItems": 1 } },
+            "not": { "required": ["first_failure"] }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "fail" } } },
+          "then": { "required": ["evidence", "first_failure"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "blocked" } } },
+          "then": { "required": ["reason"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "stale" } } },
+          "then": { "required": ["input_hashes"] }
+        }
+      ]
+    }
+  }
+}
