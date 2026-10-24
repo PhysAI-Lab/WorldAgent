@@ -51,9 +51,11 @@ class RenderCandidateTest(unittest.TestCase):
 
     @staticmethod
     def environ(extra=None):
+        # No user config file or session snapshot: only what the test sets reaches the render.
         base = {k: v for k, v in os.environ.items()
-                if k not in ("WORLDAGENT_RENDER_RESOLUTION", "WORLDAGENT_RENDER_SAMPLES", "EXPECTED_DEVICE")}
-        return {**base, "WORLDAGENT_BLENDER": BLENDER, **(extra or {})}
+                if k not in ("WORLDAGENT_RENDER_RESOLUTION", "WORLDAGENT_RENDER_SAMPLES", "EXPECTED_DEVICE",
+                             "WORLDAGENT_ENV_FILE", "CODEX_SESSION_ID", "CODEX_THREAD_ID")}
+        return {**base, "WORLDAGENT_BLENDER": BLENDER, "WORLDAGENT_CONFIG_FILE": "/nonexistent/worldagent/config.json", **(extra or {})}
 
     def verify(self, expected_device=None, environ=None):
         env = self.environ(environ)

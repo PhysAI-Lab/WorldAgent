@@ -19,7 +19,8 @@ import worldagent_env as env  # noqa: E402
 
 HOOK = ROOT / "hooks" / "session_env.py"
 CLEAN = {k: v for k, v in os.environ.items()
-         if not k.startswith(("WORLDAGENT_", "BLENDER_USER_", "CLAUDE_PLUGIN_OPTION_", "CLAUDE_ENV_FILE"))}
+         if not k.startswith(("WORLDAGENT_", "BLENDER_USER_", "CLAUDE_PLUGIN_OPTION_", "CLAUDE_ENV_FILE",
+                              "CODEX_SESSION_ID", "CODEX_THREAD_ID"))}
 
 
 def fake_blender(folder: Path, version: str) -> Path:
@@ -258,7 +259,7 @@ class SessionHookTest(EnvTestCase):
 
 
 
-class TimeBudgetTest(unittest.TestCase):
+class TimeBudgetTest(EnvTestCase):
     def test_default_setting_and_environment(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("WORLDAGENT_TIME_BUDGET_HOURS", None)
@@ -279,13 +280,7 @@ class TimeBudgetTest(unittest.TestCase):
 
 
 
-class RenderOutputTest(unittest.TestCase):
-    def setUp(self):
-        patcher = mock.patch.dict(os.environ)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        os.environ.pop("WORLDAGENT_RENDER_RESOLUTION", None)
-        os.environ.pop("WORLDAGENT_RENDER_SAMPLES", None)
+class RenderOutputTest(EnvTestCase):
 
     def test_default_is_1920x1080_and_scene_samples(self):
         out = env.render_output()

@@ -14,6 +14,11 @@ Checks the cross-references a JSON schema cannot express [paper A.1.1
 Shape is checked by schemas/world_spec.schema.json; this script only reports
 malformed parts it cannot read. Standard library only.
 
+The first time the audit passes on a case's manifest.json, the spec is frozen: a copy and
+its hash go to <case>/reports/spec_baseline.json and the case trace gets a `spec_frozen`
+event. Later runs never overwrite it. The gate and promote compare the current spec with
+it and list every change for review, whether or not any row was measured in between.
+
 Usage: spec_audit.py <manifest.json> [--out report.json]
 Exit: 0 pass, 1 audit errors, 2 unreadable manifest.
 """
@@ -23,7 +28,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import case_trace  # noqa: E402  (spec part and hash shared with the runner and the trace)
+
+# The spec the case was built against [skill.md Stage 0: spec audit before construction].
+BASELINE = Path("reports") / "spec_baseline.json"
 
 # Support targets that are not objects [non-penetration-contract.en.md support chain].
 SUPPORT_KEYWORDS = {"foundation", "ground"}
@@ -227,6 +239,24 @@ def audit(manifest: dict) -> list[dict]:
     return errors
 
 
+def freeze(case_dir: Path, manifest: dict) -> dict:
+    """Keep the first spec that passes the audit; return where it is and whether the current spec matches."""
+    path = case_dir / BASELINE
+    digest = case_trace.spec_hash(manifest)
+    if path.is_file():
+        try:
+            frozen = json.loads(path.read_text(encoding="utf-8")).get("spec_hash")
+        except (OSError, ValueError, AttributeError):
+            frozen = None
+        return {"path": BASELINE.as_posix(), "created": False, "matches": frozen == digest}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"spec_hash": digest, "frozen_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "spec": case_trace.spec_part(manifest)}
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    case_trace.record(case_dir, {"type": "spec_frozen", "baseline": BASELINE.as_posix()}, manifest)
+    return {"path": BASELINE.as_posix(), "created": True, "matches": True}
+
+
 def main() -> None:
     args = parse_args()
     try:
@@ -240,6 +270,8 @@ def main() -> None:
 
     errors = audit(manifest)
     report = {"pass": not errors, "manifest": str(args.manifest.resolve()), "errors": errors}
+    if report["pass"] and args.manifest.name == "manifest.json":
+        report["spec_baseline"] = freeze(args.manifest.resolve().parent, manifest)
     text = json.dumps(report, indent=2, ensure_ascii=False)
     if args.out:
         args.out.write_text(text + "\n", encoding="utf-8")

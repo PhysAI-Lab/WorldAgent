@@ -127,7 +127,7 @@ A failing row means the scene or the bake is wrong until shown otherwise. Fix th
 - do not change what the row requires: moving a beat's frame window, loosening a `pass_predicate`, or changing an object's collision representation or constraints so that the requested physics no longer happens (for example, joints in place of rings that hang by contact) is changing the request, not fixing the scene. If the requested physics cannot be produced with this solver, the row fails and the case is `limited`; say so;
 - record the change with `case_trace.py note --row <row_id>`: what the old verifier got wrong, the evidence, and why the new one still checks the row's `pass_predicate`.
 
-The runner keeps a copy of every verifier version it runs under `reports/trace/verifiers/` and records each change in the row's `contract_changes`. The gate and promote list every row whose verifier, `pass_predicate`, or world spec changed after a non-pass result, so the user can see what changed. The list does not change any verdict; it shows the user where to look.
+The runner keeps a copy of every verifier version it runs under `reports/trace/verifiers/` and records each change in the row's `contract_changes`. The gate and promote list every row whose verifier, `pass_predicate`, or world spec changed after a non-pass result, so the user can see what changed. The list does not change any verdict; it shows the user where to look. The gate's `spec_baseline` entry also compares the world spec with the copy frozen when the spec audit first passed (`reports/spec_baseline.json`), so a spec change made before any row was measured is listed as well.
 
 ## 8. Examples
 

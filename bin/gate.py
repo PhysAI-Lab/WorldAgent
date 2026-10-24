@@ -37,6 +37,11 @@ pass_predicate, or world spec was changed after the row measured something other
 (see bin/run_verifier.py step 5). Rewriting a failing verifier, loosening a threshold, or
 moving a beat's window is how a check gets weaker without any verdict being faked, so a
 person should look at each listed change before accepting the result.
+`spec_baseline` compares the world spec with the one frozen when the spec audit first
+passed (bin/spec_audit.py) and lists what changed since: object sizes, beats, inputs and
+topology changed before any row was measured show up here too. `limited` reports whether
+a `limited` case status was recorded by bin/limit.py (runner results on every non-render
+row) or written some other way.
 
 --mark-stale writes `stale` (input_hashes kept) into exactly the rows whose
 inputs changed; other rows are left as they are [paper A.2.2 'invalidate
@@ -110,19 +115,20 @@ def changed_inputs(hashes: dict, manifest: dict, case_dir: Path) -> list[str]:
 
 
 def evidence_problem(row: dict, case_dir: Path) -> str | None:
-    """Return why a pass row's runner evidence is not acceptable, or None."""
+    """Return why a measured row's runner evidence (for its current status) is not acceptable, or None."""
+    status = row.get("status")
     for field in ("verified_by", "candidate"):
         if not (isinstance(row.get(field), str) and row[field]):
-            return f"pass without {field}"
+            return f"{status} without {field}"
     hashes = row.get("input_hashes")
     if not (isinstance(hashes, dict) and hashes):
-        return "pass without input_hashes"
+        return f"{status} without input_hashes"
     for key in (row["verified_by"], row["candidate"], SPEC_HASH_KEY):
         if key not in hashes:
             return f"input_hashes does not cover {key}"
     evidence = row.get("evidence")
     if not (isinstance(evidence, list) and evidence and all(isinstance(e, str) for e in evidence)):
-        return "pass without evidence"
+        return f"{status} without evidence"
     first = Path(evidence[0])
     if first.is_absolute() or not first.parts or first.parts[0] != "reports":
         return f"evidence[0] {evidence[0]!r} is not a runner report under reports/"
@@ -132,7 +138,7 @@ def evidence_problem(row: dict, case_dir: Path) -> str | None:
         return f"cannot read runner report {evidence[0]}: {exc}"
     if not isinstance(report, dict):
         return f"runner report {evidence[0]} is not a JSON object"
-    for field, expected in (("row", row.get("id")), ("status", "pass"), ("candidate", row["candidate"]),
+    for field, expected in (("row", row.get("id")), ("status", status), ("candidate", row["candidate"]),
                             ("input_hashes", hashes)):
         if report.get(field) != expected:
             return f"runner report {evidence[0]} {field} does not match the row"
@@ -188,6 +194,34 @@ def contract_changes(rows: list) -> list[dict]:
         if after_non_pass:
             out.append({"row": row.get("id"), "changes": after_non_pass})
     return out
+
+
+def spec_baseline(case_dir: Path, manifest: dict) -> dict:
+    """The world spec compared with the one frozen at the first passing spec audit, for review."""
+    path = case_dir / spec_audit.BASELINE
+    if not path.is_file():
+        return {"baseline": None, "changed": None, "problem": "no frozen spec; run bin/spec_audit.py"}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        frozen, digest = data["spec"], data["spec_hash"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"baseline": spec_audit.BASELINE.as_posix(), "changed": None, "problem": "frozen spec is unreadable"}
+    out = {"baseline": spec_audit.BASELINE.as_posix(), "frozen_utc": data.get("frozen_utc"),
+           "changed": run_verifier.spec_hash(manifest) != digest}
+    if out["changed"]:
+        out["diff"] = case_trace.spec_diff(frozen, case_trace.spec_part(manifest)) or "changed"
+    return out
+
+
+def limited_status(case_dir: Path, manifest: dict) -> dict | None:
+    """For a `limited` case: whether bin/limit.py recorded it, with its report; None otherwise."""
+    if manifest.get("status") != "limited":
+        return None
+    record = manifest.get("limitation")
+    report = record.get("report") if isinstance(record, dict) else None
+    if not (isinstance(report, str) and (case_dir / report).is_file()):
+        return {"recorded": False, "problem": "status limited was not recorded by bin/limit.py"}
+    return {"recorded": True, "report": report, "candidate": record.get("candidate")}
 
 
 def evaluate(case_dir: Path, candidate: Path | None = None, manifest: dict | None = None) -> dict:
@@ -262,6 +296,8 @@ def evaluate(case_dir: Path, candidate: Path | None = None, manifest: dict | Non
         "unknown_covers": unknown_covers,
         "rows": verdicts,
         "contract_changes": contract_changes(rows),
+        "spec_baseline": spec_baseline(case_dir, manifest),
+        "limited": limited_status(case_dir, manifest),
     }
 
 
@@ -295,6 +331,7 @@ def main() -> None:
                                  "failing_rows": [r["row"] for r in report.get("rows", []) if r.get("verdict") != "pass"],
                                  "errors": len(report.get("errors", [])),
                                  "contract_changes": [c["row"] for c in report.get("contract_changes", [])],
+                                 "spec_changed_since_baseline": (report.get("spec_baseline") or {}).get("changed"),
                                  "marked_stale": report.get("marked_stale", [])})
     text = json.dumps(report, indent=2, ensure_ascii=False)
     if args.out:

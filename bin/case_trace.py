@@ -162,7 +162,9 @@ def history(events: list[dict], row: str | None = None) -> dict:
              if e.get("type") == "note" and (row is None or row in (e.get("rows") or [row]))]
     return {"rows": rows, "spec_changes": [e for e in events if e.get("type") == "spec_change"],
             "notes": notes, "gates": [e for e in events if e.get("type") == "gate"],
-            "promotions": [e for e in events if e.get("type") == "promote"]}
+            "promotions": [e for e in events if e.get("type") == "promote"],
+            "frozen": [e for e in events if e.get("type") == "spec_frozen"],
+            "limits": [e for e in events if e.get("type") == "limit"]}
 
 
 def show(case_dir: Path, row: str | None) -> str:
@@ -171,6 +173,8 @@ def show(case_dir: Path, row: str | None) -> str:
     for rid, seq in sorted(h["rows"].items(), key=lambda kv: str(kv[0])):
         steps = " -> ".join(f"{s['status']}" + (f" ({s['candidate']})" if s.get("candidate") else "") for s in seq)
         out.append(f"row {rid}: {steps or 'never run'}")
+    for f in h["frozen"]:
+        out.append(f"{f['time']} spec frozen ({f.get('baseline')})")
     for c in h["spec_changes"]:
         out.append(f"{c['time']} spec changed {json.dumps(c.get('diff', 'first version'), ensure_ascii=False)}")
     for n in h["notes"]:
@@ -190,6 +194,9 @@ def show(case_dir: Path, row: str | None) -> str:
     for p in h["promotions"]:
         out.append(f"{p['time']} promote {'done' if p.get('promoted') else 'refused'}"
                    + (f": {p.get('reason')}" if p.get("reason") else ""))
+    for lim in h["limits"]:
+        out.append(f"{lim['time']} limited on {lim.get('candidate')}: {lim.get('reason')}"
+                   + (f"; failing: {', '.join(lim.get('failing_rows') or [])}" if lim.get("failing_rows") else ""))
     return "\n".join(out) if out else "no trace yet"
 
 

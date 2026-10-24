@@ -27,8 +27,9 @@ non-penetration-contract.en.md Promotion]. Steps:
 7. check the case layout again; on failure undo step 6 and fail.
 
 The output and the gate report list `contract_changes`: rows whose verifier, pass_predicate
-or world spec was changed after a non-pass measurement (bin/gate.py REVIEW). They do not
-block promotion; they are what a person should diff before trusting the result.
+or world spec was changed after a non-pass measurement, and `spec_baseline`: what changed in
+the world spec since it was frozen at the first passing spec audit (bin/gate.py REVIEW).
+They do not block promotion; they are what a person should diff before trusting the result.
 
 Failed candidates stay under .work/ untouched [paper A.2.2 'Feedback and
 acceptance']. Standard library only.
@@ -158,7 +159,7 @@ def main() -> None:
     if not report["pass"]:
         failing = [v for v in report["rows"] if v["verdict"] != "pass"]
         emit({"promoted": False, "reason": "gate did not pass", "errors": report["errors"],
-              "failing_rows": failing, "reverified": reverified}, 1)
+              "failing_rows": failing, "reverified": reverified, "spec_baseline": report["spec_baseline"]}, 1)
     expected = report["candidate_sha256"]
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -213,7 +214,8 @@ def main() -> None:
 
     emit({"promoted": True, "final_scene": FINAL_NAME, "candidate": report["candidate"],
           "sha256": expected, "gate_report": gate_report,
-          "superseded": report["superseded"], "contract_changes": report["contract_changes"]}, 0)
+          "superseded": report["superseded"], "contract_changes": report["contract_changes"],
+          "spec_baseline": report["spec_baseline"]}, 0)
 
 
 if __name__ == "__main__":
