@@ -26,10 +26,21 @@ non-penetration-contract.en.md Promotion]. Steps:
    "scene_final.blend", and add the report to artifacts.reports;
 7. check the case layout again; on failure undo step 6 and fail.
 
-The output and the gate report list `contract_changes`: rows whose verifier, pass_predicate
-or world spec was changed after a non-pass measurement, and `spec_baseline`: what changed in
-the world spec since it was frozen at the first passing spec audit (bin/gate.py REVIEW).
+The output and the gate report list `contract_changes`: rows whose verifier, pass_predicate,
+tolerances, measures, world spec or case-local .py inputs were changed after a non-pass
+measurement; `spec_baseline`: what changed in the world spec since it was frozen at the first
+passing spec audit; and `solver_deviations`: objects simulated by a Blender system that is not
+preferred for their simulation_class, with the recorded reason (bin/gate.py REVIEW).
 They do not block promotion; they are what a person should diff before trusting the result.
+
+`final_relative_paths` (output and gate report) lists the `//` paths the runner rebased while
+re-verifying (its reports' `rebased_paths`) that resolve to a different place from
+scene_final.blend in the case root than from the candidate's folder: a cache written as
+`//../../cache/...` next to .work/candidates/<id>/, or a disk point cache, which Blender reads
+from `//blendcache_scene_final/`. Promote does not rewrite them: saving a rewritten copy
+would change the bytes, and the final scene must be the file every row was measured on.
+Opening scene_final.blend directly reads those caches only once they are moved there or
+written as absolute paths. Listed for review; it does not block promotion.
 
 Failed candidates stay under .work/ untouched [paper A.2.2 'Feedback and
 acceptance']. Standard library only.
@@ -129,6 +140,31 @@ def reverify(case_dir: Path, candidate: Path) -> list[dict]:
     return outcomes
 
 
+def final_relative_paths(case_dir: Path, reverified: list[dict]) -> list[dict]:
+    """Rebased `//` paths from the re-verification reports that scene_final.blend would resolve elsewhere."""
+    out, seen = [], set()
+    for outcome in reverified:
+        try:
+            report = json.loads((case_dir / outcome["report"]).read_text(encoding="utf-8"))
+        except (KeyError, TypeError, OSError, ValueError):
+            continue
+        for entry in report.get("rebased_paths") or []:
+            if not (isinstance(entry, dict) and isinstance(entry.get("from"), str) and entry["from"].startswith("//")):
+                continue
+            if entry.get("read_from_copy"):
+                final = case_dir / f"blendcache_{Path(FINAL_NAME).stem}"
+            else:
+                final = case_dir / entry["from"][2:]
+            final = os.path.normpath(str(final))
+            key = (entry.get("datablock"), entry.get("property"), entry["from"])
+            if final != entry.get("to") and key not in seen:
+                seen.add(key)
+                out.append({"datablock": entry.get("datablock"), "property": entry.get("property"),
+                            "from": entry["from"], "candidate_resolves_to": entry.get("to"),
+                            "final_resolves_to": final, "row": outcome.get("row")})
+    return out
+
+
 def main() -> None:
     args = parse_args()
     case_dir = args.case_dir.resolve()
@@ -159,7 +195,8 @@ def main() -> None:
     if not report["pass"]:
         failing = [v for v in report["rows"] if v["verdict"] != "pass"]
         emit({"promoted": False, "reason": "gate did not pass", "errors": report["errors"],
-              "failing_rows": failing, "reverified": reverified, "spec_baseline": report["spec_baseline"]}, 1)
+              "failing_rows": failing, "reverified": reverified, "spec_baseline": report["spec_baseline"],
+              "solver_deviations": report["solver_deviations"]}, 1)
     expected = report["candidate_sha256"]
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -186,6 +223,7 @@ def main() -> None:
     gate_report_path = reports / f"gate_{stamp}.json"
     report["promoted_to"] = FINAL_NAME
     report["reverified"] = reverified
+    report["final_relative_paths"] = final_relative_paths(case_dir, reverified)
     report["superseded"] = run_verifier.rel(superseded, case_dir) if superseded else None
     run_verifier.write_json_atomic(gate_report_path, report)
     gate_report = run_verifier.rel(gate_report_path, case_dir)
@@ -215,7 +253,8 @@ def main() -> None:
     emit({"promoted": True, "final_scene": FINAL_NAME, "candidate": report["candidate"],
           "sha256": expected, "gate_report": gate_report,
           "superseded": report["superseded"], "contract_changes": report["contract_changes"],
-          "spec_baseline": report["spec_baseline"]}, 0)
+          "spec_baseline": report["spec_baseline"], "solver_deviations": report["solver_deviations"],
+          "final_relative_paths": report["final_relative_paths"]}, 0)
 
 
 if __name__ == "__main__":

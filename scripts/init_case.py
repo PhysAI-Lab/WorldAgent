@@ -10,16 +10,10 @@ import sys
 from pathlib import Path
 
 
-SIMULATION_CLASSES = (
-    "rigid_body",
-    "cloth",
-    "liquid",
-    "gas",
-    "particles",
-    "granular_approximation",
-    "soft_body",
-    "coupled",
-)
+# Case-level classes; each object contract adds its own simulation_class and blender_system
+# from the same table (bin/spec_audit.py checks that they agree).
+SOLVER_CLASSES = Path(__file__).resolve().parent.parent / "schemas" / "solver_classes.json"
+SIMULATION_CLASSES = tuple(json.loads(SOLVER_CLASSES.read_text(encoding="utf-8"))["case_classes"])
 
 
 def parse_args() -> argparse.Namespace:

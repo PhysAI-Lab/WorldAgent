@@ -6,6 +6,7 @@
     near = causal.closest_approach(ball, glass, frames)   # when hit is None: how close they came
     leak = causal.region_entry(water, (-1, -1, 0), (1, 1, 0.2), frames)
     causal.order({"impact": hit, "leak": leak}, [("impact", "leak")], min_lag_frames=1)
+    causal.order(events, [("contact", "squash")], min_lag_frames=1, allow_simultaneous=[("contact", "squash")])
 
 The world story says which event must come before which [paper A.1.1 'temporal/causal
 dependency'; paper 3.2.2 'Causal': cause before effect, checked through contact, response,
@@ -18,7 +19,10 @@ consistent state exchange'].
 
 Every threshold (contact tolerance, motion threshold, lags) is a required argument from the
 row's pass_predicate; nothing here picks one. Events are found on the frames given, so a
-coarse frame list can only report the first sampled frame of an event.
+coarse frame list can only report the first sampled frame of an event, and two events less
+than a frame apart can land on the same sampled frame: `order` reports such a pair as
+"simultaneous", separately from an effect before its cause, and accepts it only where the
+row allows it (`allow_simultaneous` or `min_lag_frames=0`).
 """
 
 from __future__ import annotations
@@ -122,14 +126,26 @@ def story_dependencies(manifest: Mapping) -> tuple[list[tuple[str, str]], dict[s
 
 def order(events: Mapping[str, int | None], dependencies: Sequence[tuple[str, str]], *, min_lag_frames: int,
           max_lag_frames: int | None = None, windows: Mapping[str, Sequence[int]] | None = None,
-          name: str = "causal_order") -> Check:
+          allow_simultaneous: Sequence[tuple[str, str]] = (), name: str = "causal_order") -> Check:
     """Every (cause, effect) pair: both events happened and min_lag <= effect - cause <= max_lag.
 
-    events          event name -> first frame (None when it never happened), e.g. from the detectors
-    dependencies    (cause, effect) names; all names must be in events
-    min_lag_frames  required: 1 means the effect must come strictly after the cause; 0 allows the same frame
-    max_lag_frames  optional upper bound on effect - cause
-    windows         optional event name -> (start, end) frame interval it must fall in (e.g. its beat)
+    events              event name -> first frame (None when it never happened), e.g. from the detectors
+    dependencies        (cause, effect) names; all names must be in events
+    min_lag_frames      required: 1 means the effect must come strictly after the cause; 0 allows the same
+                        frame for every pair
+    max_lag_frames      optional upper bound on effect - cause
+    windows             optional event name -> (start, end) frame interval it must fall in (e.g. its beat)
+    allow_simultaneous  (cause, effect) pairs, each one of dependencies, that may also land on the same
+                        sampled frame (lag 0) whatever min_lag_frames is, e.g. a contact and the peak squash
+                        it causes at 24 fps; every other pair keeps min_lag_frames
+
+    Each entry of measurements["pairs"] has "relation": "missing" (an event never happened),
+    "effect_before_cause" (lag < 0, a true order violation), "simultaneous" (lag 0: both on
+    the same sampled frame, so the frames cannot tell their order) or "effect_after_cause"
+    (lag > 0), plus "ok" and, when not ok, "problem". A simultaneous pair fails with
+    "cause and effect on the same sampled frame" unless min_lag_frames is 0 or the pair is in
+    allow_simultaneous; then it passes and is counted in "simultaneous_accepted". Nothing is
+    accepted by default.
     """
     if min_lag_frames < 0 or (max_lag_frames is not None and max_lag_frames < min_lag_frames):
         raise ValueError("need 0 <= min_lag_frames <= max_lag_frames")
@@ -140,6 +156,10 @@ def order(events: Mapping[str, int | None], dependencies: Sequence[tuple[str, st
     unknown = sorted(set(windows) - set(events))
     if unknown:
         raise ValueError(f"windows name unknown events: {unknown}")
+    accepted = {tuple(pair) for pair in allow_simultaneous}
+    unknown = sorted(accepted - {tuple(pair) for pair in dependencies})
+    if unknown:
+        raise ValueError(f"allow_simultaneous names pairs that are not dependencies: {unknown}")
     failures = []
     for event, frame in sorted(events.items()):
         if frame is None:
@@ -149,20 +169,39 @@ def order(events: Mapping[str, int | None], dependencies: Sequence[tuple[str, st
             if not start <= frame <= end:
                 failures.append({"event": event, "frame": frame, "window": [start, end],
                                  "problem": "outside its frame interval"})
-    pairs = []
+    pairs, simultaneous_accepted = [], 0
     for cause, effect in dependencies:
         c, e = events[cause], events[effect]
         lag = None if c is None or e is None else e - c
-        pairs.append({"cause": cause, "effect": effect, "cause_frame": c, "effect_frame": e, "lag_frames": lag})
+        pair = {"cause": cause, "effect": effect, "cause_frame": c, "effect_frame": e, "lag_frames": lag}
+        pairs.append(pair)
+        problem = None
         if lag is None:
-            continue
-        if lag < min_lag_frames:
-            failures.append({"cause": cause, "effect": effect, "lag_frames": lag,
-                             "problem": "effect before cause" if lag < 0 else "effect too soon after cause"})
-        elif max_lag_frames is not None and lag > max_lag_frames:
-            failures.append({"cause": cause, "effect": effect, "lag_frames": lag, "problem": "effect too late"})
+            pair["relation"] = "missing"
+            problem = "never happened"  # already reported per event above
+        elif lag < 0:
+            pair["relation"], problem = "effect_before_cause", "effect before cause"
+        elif lag == 0:
+            pair["relation"] = "simultaneous"
+            if min_lag_frames > 0 and (cause, effect) not in accepted:
+                problem = "cause and effect on the same sampled frame"
+            else:
+                simultaneous_accepted += 1
+        else:
+            pair["relation"] = "effect_after_cause"
+            if lag < min_lag_frames:
+                problem = "effect too soon after cause"
+        if problem is None and lag is not None and max_lag_frames is not None and lag > max_lag_frames:
+            problem = "effect too late"
+        pair["ok"] = problem is None
+        if problem is not None:
+            pair["problem"] = problem
+            if lag is not None:
+                failures.append({"cause": cause, "effect": effect, "lag_frames": lag, "relation": pair["relation"],
+                                 "problem": problem})
     measurements = {"events": dict(events), "pairs": pairs, "min_lag_frames": min_lag_frames,
-                    "max_lag_frames": max_lag_frames, "failure_count": len(failures)}
+                    "max_lag_frames": max_lag_frames, "allow_simultaneous": [list(p) for p in allow_simultaneous],
+                    "simultaneous_accepted": simultaneous_accepted, "failure_count": len(failures)}
     return Check(name, not failures, measurements, failures[0] if failures else None)
 
 

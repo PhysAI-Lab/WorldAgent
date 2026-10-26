@@ -44,6 +44,17 @@ class SchemaFixtureTest(unittest.TestCase):
                     else:
                         self.fail(f"fixture name must start with valid_ or invalid_: {path.name}")
 
+    def test_solver_class_names_match_table(self):
+        table = load(ROOT / "schemas" / "solver_classes.json")
+        obj = load(ROOT / "schemas" / "world_spec.schema.json")["$defs"]["object_contract"]["properties"]
+        self.assertEqual(sorted(table["classes"]), sorted(obj["simulation_class"]["enum"]))
+        self.assertEqual(sorted(table["systems"]), sorted(obj["blender_system"]["enum"]))
+        for name, entry in table["classes"].items():
+            with self.subTest(simulation_class=name):
+                self.assertTrue(entry["preferred"])
+                self.assertLessEqual(set(entry["preferred"]), set(table["systems"]))
+        self.assertEqual(set(table["case_classes"]) - {"coupled"}, set(table["classes"]) - {"fixed", "kinematic"})
+
 
 if __name__ == "__main__":
     unittest.main()

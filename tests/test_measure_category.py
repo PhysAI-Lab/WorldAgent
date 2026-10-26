@@ -34,7 +34,31 @@ class CategoryTest(unittest.TestCase):
         self.assertEqual(12, len(totals))
         self.assertTrue(all(b >= a for a, b in zip(totals, totals[1:])), totals)  # the emitter keeps adding gas
         self.assertEqual([16, 16, 16], m["grid"])
-        self.assertTrue(all(0 <= f["boundary_fraction"] <= 1 for f in m["frames"]))
+        # the source's emission shell reaches the guard layer above the floor, and only that face
+        self.assertTrue(all(f["guard_fraction_by_face"]["z_min"] > 0 for f in m["frames"]))
+        self.assertTrue(all(f["guard_fraction_by_face"]["z_max"] == 0 for f in m["frames"]))
+        self.assertEqual([0.125] * 3, m["cell_size_m"])
+
+    def test_gas_reaching_the_border_fails(self):
+        self.assertEqual(["FINISHED"], self.r["jet_bake"])
+        self.assertEqual("pass", self.r["jet_early"]["status"])
+        f = self.failure("jet_walls")
+        self.assertEqual(("gas on the domain walls", "z_max"), (f["problem"], f["face"]))
+        frames = self.m("jet_walls", "gas_density")["frames"]
+        last = frames[-1]
+        self.assertEqual(24, last["frame"])
+        self.assertGreater(last["guard_fraction_by_face"]["z_max"], 0.05)
+        # Mantaflow's outermost layer reads zero even where gas leaves (the old measure, which could not fail)
+        self.assertTrue(all(fr["boundary_layer_fraction"] == 0.0 for fr in frames))
+
+    def test_gas_cell_size_in_world_units(self):
+        self.assertEqual(["FINISHED"], self.r["scaled_bake"])
+        s = self.r["scaled"]
+        self.assertEqual([16, 8, 8], s["grid"])
+        for got in s["cell_size_m"]:
+            self.assertAlmostEqual(0.25, got, places=6)
+        self.assertGreater(s["raw_sum"], 0)
+        self.assertAlmostEqual(s["raw_sum"] * 0.25 ** 3, s["total"], places=6)
 
     def test_gas_failures(self):
         self.assertEqual("sudden density jump", self.failure("gas_jump")["problem"])
@@ -42,6 +66,7 @@ class CategoryTest(unittest.TestCase):
                          tuple(self.failure("gas_min_total")[k] for k in ("problem", "frame")))
         self.assertEqual(0.0, self.r["gas_unbaked_total"])
         self.assertEqual("ValueError", self.r["gas_not_domain"])
+        self.assertEqual("TypeError", self.r["gas_no_guard"])  # guard_layers is required
 
     def test_shape_key_strain_and_step(self):
         m = self.m("deform_pass", "deformation")

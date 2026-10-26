@@ -7,8 +7,8 @@ For every case in cases.json (or --only), the runner:
 2. sets WORLDAGENT_TIME_BUDGET_HOURS for the run and kills the agent after --timeout-hours;
 3. evaluates the case folder with the plugin's own tools (no agent involved): manifest status
    and budget, the gate verdict on the candidate the rows name, failing rows, contract changes,
-   trace notes, the latest render report, the final scene, and the rigid body setup checks on
-   the candidate (tests/e2e/setup_probe.py, in a fresh Blender process);
+   trace notes, the final render of that candidate (never a later preview or another candidate's
+   render), the final scene, and the rigid body setup checks on the candidate (tests/e2e/setup_probe.py, in a fresh Blender process);
 4. writes <out>/summary.json and <out>/summary.md.
 
 The agent is the only part that differs between hosts. The plugin must be installed for the
@@ -41,6 +41,7 @@ PLUGIN = HERE.parent.parent
 sys.path.insert(0, str(PLUGIN / "bin"))
 import case_trace  # noqa: E402
 import gate  # noqa: E402
+import run_verifier  # noqa: E402
 import worldagent_env  # noqa: E402
 
 FINAL = "scene_final.blend"
@@ -113,7 +114,12 @@ def latest(paths) -> Path | None:
 
 
 def candidate_of(manifest: dict, case: Path) -> Path | None:
-    named = (manifest.get("validation") or {}).get("candidate")
+    """The selected candidate: the promoted one, else the one bin/limit.py recorded, else the rows' most named."""
+    named = None
+    for record in (manifest.get("validation"), manifest.get("limitation")):
+        if isinstance(record, dict) and isinstance(record.get("candidate"), str):
+            named = record["candidate"]
+            break
     if not named:
         counts: dict[str, int] = {}
         for row in manifest.get("requirements_matrix") or []:
@@ -123,6 +129,34 @@ def candidate_of(manifest: dict, case: Path) -> Path | None:
     if named and (case / named).is_file():
         return case / named
     return latest(case.glob(".work/candidates/*/scene.blend"))
+
+
+def final_render_of(case: Path, candidate: Path | None) -> dict:
+    """The newest final render report of exactly this candidate (same SHA-256), preferring a successful one.
+
+    Previews and renders of other candidates are never picked; when there is no final render of
+    the candidate the result says so and counts the reports that were skipped.
+    """
+    reports = []
+    for path in sorted(case.glob("reports/render_*.json")):
+        try:
+            reports.append((path, json.loads(path.read_text(encoding="utf-8"))))
+        except (OSError, ValueError):
+            continue
+    if candidate is None:
+        return {"problem": "no selected candidate", "skipped_reports": len(reports)}
+    sha = run_verifier.sha256_file(candidate)
+    matching = [(p, r) for p, r in reports if r.get("mode") == "final" and r.get("candidate_sha256") == sha]
+    if not matching:
+        return {"problem": f"no final render of {candidate.relative_to(case)}", "skipped_reports": len(reports)}
+    path, r = ([m for m in matching if m[1].get("status") == "ok"] or matching)[-1]
+    out = {k: r.get(k) for k in ("mode", "status", "candidate", "resolution", "samples", "problem")}
+    out.update(frames=len(r.get("files") or []), device=(r.get("device") or {}).get("device_type"),
+               seconds=r.get("render_seconds"), report=str(path.relative_to(case)),
+               skipped_reports=len(reports) - 1)
+    if isinstance(r.get("movie"), dict):
+        out["movie"] = {k: r["movie"].get(k) for k in ("status", "path", "frame_count", "fps", "problem")}
+    return out
 
 
 def setup_probe(candidate: Path, workspace: Path) -> dict:
@@ -165,12 +199,7 @@ def evaluate(workspace: Path, probe: bool) -> dict:
     result["trace"] = {"events": len(events), "notes": len(notes),
                        "note_results": sorted({str(n.get("result")) for n in notes}),
                        "candidates_verified": len({e.get("candidate") for e in events if e.get("type") == "verify"})}
-    render = latest(case.glob("reports/render_*.json"))
-    if render:
-        r = json.loads(render.read_text(encoding="utf-8"))
-        result["render"] = {k: r.get(k) for k in ("mode", "status", "resolution", "samples", "problem")}
-        result["render"].update(frames=len(r.get("files") or []), device=(r.get("device") or {}).get("device_type"),
-                                seconds=r.get("render_seconds"), report=str(render.relative_to(case)))
+    result["render"] = final_render_of(case, candidate)
     final = case / FINAL
     result["final_scene"] = final.is_file()
     if probe and candidate:
@@ -196,8 +225,11 @@ def write_summary(out: Path, results: list[dict]) -> None:
         run = r.get("run") or {}
         exit_text = "timeout" if run.get("timed_out") else run.get("exit_code", "-")
         render = r.get("render") or {}
-        render_text = (f"{render.get('mode')} {render.get('status')} {render.get('frames')}f "
-                       f"{'x'.join(map(str, render.get('resolution') or []))}") if render else "none"
+        if render.get("mode"):
+            render_text = (f"{render['mode']} {render.get('status')} {render.get('frames')}f "
+                           f"{'x'.join(map(str, render.get('resolution') or []))}")
+        else:
+            render_text = render.get("problem") or "none"
         not_passing = ", ".join(f"{k}:{v}" for k, v in (r.get("not_passing") or {}).items()) or "-"
         lines.append(f"| {r['id']} | {run.get('agent_hours', '-')} | {exit_text} | {r.get('status', r.get('problem', '-'))} "
                      f"| {r.get('gate_pass', '-')} | {not_passing} | {', '.join(r.get('contract_changes') or []) or '-'} "

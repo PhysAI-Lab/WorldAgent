@@ -1,7 +1,9 @@
 """Host-independent settings, usable by ordinary Python and Blender alike.
 
-This module has no Blender imports and does not change process environment variables.
-Config keys match the Claude plugin's userConfig keys; neither host is required.
+This module has no Blender imports at module level and does not change process environment
+variables. Config keys match the Claude plugin's userConfig keys; neither host is required.
+rebase_paths() is the one function that needs Blender: the runner calls it inside the
+verifier's Blender process (bin/run_verifier.py).
 """
 from __future__ import annotations
 
@@ -128,3 +130,164 @@ def resolve(variable: str, explicit=None, default=None, *, use_session=True) -> 
 
 def value(variable: str, default=None):
     return resolve(variable, default=default)[0]
+
+
+# --- relative paths of a candidate opened from a copy ----------------------------------------
+
+SKIP_DIRS = {"__pycache__"}
+
+
+def hash_path(path) -> str:
+    """sha256 of a file, or of a directory as its sorted relative paths and file hashes (bytecode caches skipped).
+
+    Same digest as bin/run_verifier.py sha256_path, so either side can check the other's hash.
+    """
+    path = Path(path)
+
+    def file_digest(p: Path) -> str:
+        digest = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    if path.is_file():
+        return file_digest(path)
+    digest = hashlib.sha256()
+    files = (p for p in path.rglob("*") if p.is_file() and not SKIP_DIRS & set(p.relative_to(path).parts))
+    for item in sorted(files):
+        digest.update(item.relative_to(path).as_posix().encode() + b"\0" + file_digest(item).encode() + b"\n")
+    return digest.hexdigest()
+
+
+def _quoted(name: str) -> str:
+    return json.dumps(name, ensure_ascii=False)
+
+
+def _point_caches(bpy):
+    """(datablock, property path, point cache) for every point cache in the file."""
+    for scene in bpy.data.scenes:
+        world = scene.rigidbody_world
+        if world is not None and world.point_cache is not None:
+            yield scene, "rigidbody_world.point_cache", world.point_cache
+    for obj in bpy.data.objects:
+        for psys in obj.particle_systems:
+            yield obj, f"particle_systems[{_quoted(psys.name)}].point_cache", psys.point_cache
+        for mod in obj.modifiers:
+            cache = getattr(mod, "point_cache", None)
+            if cache is not None:
+                yield obj, f"modifiers[{_quoted(mod.name)}].point_cache", cache
+            canvas = getattr(mod, "canvas_settings", None) if mod.type == "DYNAMIC_PAINT" else None
+            for surface in (canvas.canvas_surfaces if canvas is not None else []):
+                yield obj, (f"modifiers[{_quoted(mod.name)}].canvas_settings.canvas_surfaces"
+                            f"[{_quoted(surface.name)}].point_cache"), surface.point_cache
+
+
+def _flip_cache(obj):
+    """(owner, key) holding a FLIP Fluids domain's cache_directory, or None.
+
+    With the add-on registered this is the RNA group; without it (the runner opens the copy
+    with --factory-startup) the value is still stored in the object's system properties,
+    which the add-on reads once a verifier enables it.
+    """
+    settings = getattr(obj, "flip_fluid", None)
+    if settings is not None:
+        if getattr(settings, "object_type", None) == "TYPE_DOMAIN":
+            return settings.domain.cache, "cache_directory"
+        return None
+    try:
+        group = obj.bl_system_properties_get()  # Blender 5.x: bpy.props data lives here
+    except AttributeError:
+        group = obj
+    try:
+        cache = group.get("flip_fluid", {}).get("domain", {}).get("cache", {})
+    except (AttributeError, TypeError):
+        return None
+    if hasattr(cache, "get") and isinstance(cache.get("cache_directory"), str):
+        return cache, "cache_directory"
+    return None
+
+
+def rebase_paths(original_dir, report_path=None) -> list[dict]:
+    """Point `//` paths of the open (copied) .blend at the candidate's own folder.
+
+    Blender resolves `//` against the folder of the file it opened; the runner opens a copy in
+    a temporary folder, so caches stored next to the candidate would not be found (a Mantaflow
+    grid then reads as all zeros while it still reports baked data). Every `//` path of a fluid
+    domain cache (Mantaflow, FLIP Fluids), an external point cache, a Mesh Cache modifier, a
+    cache file, a volume, an image or a movie clip is set to the same path under original_dir,
+    in memory only (the file is never saved). Absolute paths are left as they are. Disk point
+    caches (use_disk_cache) always live in `//blendcache_<file name>/`; the runner copies that
+    folder next to the copy before Blender starts, and they are listed here with
+    read_from_copy true. Linked library paths are not rebased.
+
+    Returns one entry per path: {datablock, property, from, to, exists[, read_from_copy]}.
+    With report_path, also writes {"rebased_paths": [...], "hashes": {path: sha256},
+    "hash_seconds": s} there, where hashes covers every existing rebased cache path the
+    verifier reads in place (not copies, not single images), so the runner can tell whether
+    the verifier changed one.
+    """
+    import bpy  # only available inside Blender
+
+    original_dir = os.path.abspath(str(original_dir))
+    stem = Path(bpy.data.filepath).stem
+    entries, cache_paths = [], []
+
+    def target(path: str) -> str:
+        return os.path.normpath(os.path.join(original_dir, path[2:]))
+
+    def rebase(datablock, prop: str, owner, key: str, cache: bool, folder: bool = False) -> None:
+        value = owner[key] if not hasattr(owner, "bl_rna") else getattr(owner, key)
+        if not (isinstance(value, str) and value.startswith("//")):
+            return
+        new = target(value)
+        if hasattr(owner, "bl_rna"):
+            setattr(owner, key, new)
+        else:
+            owner[key] = new
+        checked = os.path.dirname(new) if folder else new
+        entries.append({"datablock": f"{datablock.bl_rna.identifier}[{_quoted(datablock.name)}]", "property": prop,
+                        "from": value, "to": new, "exists": os.path.exists(new)})
+        if cache:
+            cache_paths.append(checked)
+
+    for obj in bpy.data.objects:
+        if obj.library is not None:
+            continue
+        for mod in obj.modifiers:
+            name = _quoted(mod.name)
+            if mod.type == "FLUID" and mod.fluid_type == "DOMAIN":
+                rebase(obj, f"modifiers[{name}].domain_settings.cache_directory", mod.domain_settings,
+                       "cache_directory", cache=True)
+            elif mod.type == "MESH_CACHE":
+                rebase(obj, f"modifiers[{name}].filepath", mod, "filepath", cache=True)
+        flip = _flip_cache(obj)
+        if flip is not None:
+            rebase(obj, "flip_fluid.domain.cache.cache_directory", *flip, cache=True)
+    disk_cache = os.path.join(original_dir, f"blendcache_{stem}")
+    for datablock, prop, cache in _point_caches(bpy):
+        if datablock.library is not None:
+            continue
+        if cache.use_external:
+            rebase(datablock, f"{prop}.filepath", cache, "filepath", cache=True)
+        elif cache.use_disk_cache:
+            entries.append({"datablock": f"{datablock.bl_rna.identifier}[{_quoted(datablock.name)}]", "property": prop,
+                            "from": f"//blendcache_{stem}", "to": disk_cache, "exists": os.path.isdir(disk_cache),
+                            "read_from_copy": True})
+    for collection in (bpy.data.cache_files, bpy.data.volumes, bpy.data.images, bpy.data.movieclips):
+        for block in collection:
+            if block.library is not None or getattr(block, "packed_file", None) is not None:
+                continue
+            source = getattr(block, "source", "FILE")
+            if source not in ("FILE", "SEQUENCE", "MOVIE", "TILED"):
+                continue  # generated or viewer images have no file
+            single_image = isinstance(block, bpy.types.Image) and source in ("FILE", "TILED")
+            sequence = source == "SEQUENCE" or getattr(block, "is_sequence", False)
+            rebase(block, "filepath", block, "filepath", cache=not single_image, folder=sequence)
+
+    if report_path is not None:
+        started = time.time()
+        hashes = {p: hash_path(p) for p in dict.fromkeys(cache_paths) if os.path.exists(p)}
+        atomic_json(Path(report_path), {"rebased_paths": entries, "hashes": hashes,
+                                        "hash_seconds": round(time.time() - started, 3)})
+    return entries

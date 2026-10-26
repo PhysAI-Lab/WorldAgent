@@ -33,6 +33,13 @@ COVERS = {
     "contact": ["tip", "fall", "settle"],
     "camera": ["establish"],
 }
+# row id -> the measured quantities spec_audit requires on every row
+MEASURED = {
+    "contact": {"tolerances": [{"quantity": "penetration depth", "value_m": 0.003, "basis": "screen",
+                                "screen_m": 0.003, "solver_m": 0.001,
+                                "derivation": "5 px at 1920x1080, 50 mm lens, 1.6 m = 3.0 mm; Bullet margin 1 mm"}]},
+    "camera": {"measures": [{"quantity": "visible fraction of the crates", "comparison": ">=", "value": 0.5}]},
+}
 
 
 def make_case(tmp: Path) -> Path:
@@ -51,7 +58,7 @@ def make_case(tmp: Path) -> Path:
         validation={"passed": False, "summary": {}},
         requirements_matrix=[
             {"id": rid, "text": f"{rid} requirement", "category": cat, "pass_predicate": "measured", "status": "unknown",
-             "covers": COVERS[rid]}
+             "covers": COVERS[rid], **MEASURED[rid]}
             for rid, (cat, _, _) in ROWS.items()
         ],
     )

@@ -67,5 +67,30 @@ class ScaleTest(unittest.TestCase):
         self.assertLess(f["value"], f["rho_min"])
 
 
+    def test_pixel_footprint_perspective(self):
+        r = self.r["pixel_footprint"]
+        expected = 0.036 / 0.050 * 1.6 / 1920  # sensor / lens * depth / pixels
+        self.assertAlmostEqual(expected, r["persp"]["m"], places=9)
+        self.assertAlmostEqual(1.0, r["persp"]["projected_px"], places=4)
+        self.assertAlmostEqual(expected, r["persp_off_axis"]["m"], places=9)  # depth, not distance
+        self.assertAlmostEqual(1.0, r["persp_off_axis"]["projected_px"], places=4)
+        self.assertAlmostEqual(2 * expected, r["persp_far"], places=9)
+        self.assertAlmostEqual(expected / 2, r["persp_4k"], places=9)
+        self.assertAlmostEqual(expected, r["persp_none_camera"], places=9)
+        self.assertAlmostEqual(2 * expected, r["persp_half_percentage"], places=9)
+        self.assertIn("not in front", r["behind"])
+
+    def test_pixel_footprint_portrait_fits_height(self):
+        r = self.r["pixel_footprint"]["portrait"]
+        self.assertAlmostEqual(0.036 / 0.050 * 1.6 / 1920, r["m"], places=9)
+        self.assertAlmostEqual(1.0, r["projected_px"], places=4)
+
+    def test_pixel_footprint_orthographic(self):
+        r = self.r["pixel_footprint"]["ortho"]
+        self.assertAlmostEqual(4.0 / 1920, r["near"], places=9)
+        self.assertAlmostEqual(r["near"], r["far"], places=12)
+        self.assertAlmostEqual(1.0, r["projected_px"], places=4)
+
+
 if __name__ == "__main__":
     unittest.main()

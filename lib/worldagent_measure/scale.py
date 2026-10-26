@@ -1,9 +1,10 @@
 """Metric dimensions and relative size coherence (requires bpy).
 
-    from worldagent_measure.scale import dimensions, size_ratios
+    from worldagent_measure.scale import dimensions, pixel_footprint, size_ratios
 
     dimensions([(table, (1.6, 0.9, 0.75))], rel_tol=0.02)
     size_ratios([(chair, table, 0.4, 0.9)])
+    5 * pixel_footprint(camera, crate.location, (1920, 1080))   # screen basis of a tolerance
 
 Dimensions are measured along the object's own axes, scaled: the evaluated
 counterpart of Blender's `Object.dimensions`. That is what `object_contracts[].dimensions_m`
@@ -15,6 +16,9 @@ gives rho bounds, so no defaults are provided here.
 from __future__ import annotations
 
 import math
+
+import bpy
+from mathutils import Vector
 
 from .geometry import depsgraph, world_mesh
 
@@ -154,3 +158,48 @@ def size_ratios(pairs_with_bounds: list, measure: str = "bbox_diagonal", *, name
         "failed_pair_count": sum(not p["passed"] for p in pairs),
     }
     return Check(name, first_failure is None, measurements, first_failure)
+
+
+def pixel_footprint(camera, point, resolution=None, *, scene=None, graph=None) -> float:
+    """World length of one pixel at `point`, seen from `camera` at `resolution` (metres).
+
+    The screen basis of a distance tolerance is 5 of these at the final delivery resolution
+    (schemas/requirements.schema.json `tolerance`). camera: a camera object, or None for the
+    scene camera; its evaluated transform at the current frame is used. resolution: (x, y) in
+    pixels; None uses the scene's render resolution and percentage. Perspective cameras: the
+    length at the point's depth along the view axis; orthographic: the same at every depth.
+    Follows Blender's sensor fit (AUTO fits the larger side to sensor_width) and pixel aspect.
+    With non-square pixels the shorter side is returned.
+    """
+    scene = scene or bpy.context.scene
+    camera = camera or scene.camera
+    if camera is None or camera.type != "CAMERA":
+        raise ValueError("no camera object")
+    data = camera.data
+    if data.type not in ("PERSP", "ORTHO"):
+        raise ValueError(f"{camera.name}: {data.type} camera has no single pixel size")
+    render = scene.render
+    if resolution is None:
+        resolution = (render.resolution_x * render.resolution_percentage / 100,
+                      render.resolution_y * render.resolution_percentage / 100)
+    res_x, res_y = (float(r) for r in resolution)
+    if res_x <= 0 or res_y <= 0:
+        raise ValueError(f"bad resolution {resolution}")
+    aspect_x, aspect_y = res_x * render.pixel_aspect_x, res_y * render.pixel_aspect_y
+    fit = data.sensor_fit
+    if fit == "AUTO":
+        fit = "HORIZONTAL" if aspect_x >= aspect_y else "VERTICAL"
+    if data.type == "ORTHO":
+        size = data.ortho_scale
+    else:
+        matrix = camera.evaluated_get(graph or depsgraph()).matrix_world.normalized()
+        depth = -(matrix.inverted() @ Vector(point)).z
+        if depth <= 0:
+            raise ValueError(f"point {tuple(point)} is not in front of {camera.name}")
+        sensor = data.sensor_height if data.sensor_fit == "VERTICAL" else data.sensor_width
+        size = sensor / data.lens * depth
+    if fit == "HORIZONTAL":
+        frame_x, frame_y = size, size * aspect_y / aspect_x
+    else:
+        frame_x, frame_y = size * aspect_x / aspect_y, size
+    return min(frame_x / res_x, frame_y / res_y)

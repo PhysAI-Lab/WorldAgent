@@ -134,6 +134,47 @@ class GateTest(unittest.TestCase):
         code, report = self.gate()
         self.assertEqual(0, code, report)
 
+    def test_solver_deviation_listed_without_changing_verdict(self):
+        code, report = self.gate()
+        self.assertEqual([], report["solver_deviations"])
+        m = gc.read_manifest(self.case)
+        crate = next(o for o in m["object_contracts"] if o["name"] == "crate_a")
+        crate.update(simulation_class="soft_body", blender_system="cloth",
+                     solver_choice_reason={"reason": "Soft Body probe lost volume", "evidence": ["reports/probe.json"]})
+        m["contract"]["simulation_class"] = ["rigid_body", "soft_body"]
+        gc.write_manifest(self.case, m)
+        for rid in gc.ROWS:  # re-measure on the changed spec
+            gc.record(self.case, rid, "pass")
+        code, report = self.gate()
+        self.assertEqual(0, code, report)
+        self.assertEqual([{"object": "crate_a", "simulation_class": "soft_body", "blender_system": "cloth",
+                           "preferred": ["soft_body"], "reason": "Soft Body probe lost volume",
+                           "evidence": ["reports/probe.json"]}], report["solver_deviations"])
+
+    def test_unjustified_solver_deviation_fails_audit(self):
+        m = gc.read_manifest(self.case)
+        crate = next(o for o in m["object_contracts"] if o["name"] == "crate_a")
+        crate.update(simulation_class="soft_body", blender_system="cloth")
+        m["contract"]["simulation_class"] = ["rigid_body", "soft_body"]
+        gc.write_manifest(self.case, m)
+        for rid in gc.ROWS:
+            gc.record(self.case, rid, "pass")
+        code, report = self.gate()
+        self.assertEqual(1, code)
+        self.assertEqual(["solver_choice"], [e["check"] for e in report["spec_audit_errors"]])
+        self.assertEqual("crate_a", report["solver_deviations"][0]["object"])
+        self.assertIsNone(report["solver_deviations"][0]["reason"])
+
+    def test_unmeasurable_row_fails_audit(self):
+        m = gc.read_manifest(self.case)
+        row = next(r for r in m["requirements_matrix"] if r["id"] == "camera")
+        row.pop("measures")
+        row["pass_predicate"] = "native asset review"
+        gc.write_manifest(self.case, m)
+        code, report = self.gate()
+        self.assertEqual(1, code)
+        self.assertEqual(["measurable"], [e["check"] for e in report["spec_audit_errors"]])
+
     def test_missing_report_is_unverified(self):
         (self.case / gc.row(self.case, "camera")["evidence"][0]).unlink()
         code, report = self.gate()

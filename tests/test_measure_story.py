@@ -34,10 +34,27 @@ class CausalTest(unittest.TestCase):
 
     def test_order_failures(self):
         self.assertEqual(("effect before cause", -7), tuple(self.failure("order_reversed")[k] for k in ("problem", "lag_frames")))
-        self.assertEqual("effect too soon after cause", self.failure("order_same_frame")["problem"])
+        f = self.failure("order_same_frame")
+        self.assertEqual(("cause and effect on the same sampled frame", "simultaneous", 0),
+                         (f["problem"], f["relation"], f["lag_frames"]))
         self.assertEqual("effect too late", self.failure("order_too_late")["problem"])
         self.assertEqual(("flood", "never happened"), tuple(self.failure("order_missing")[k] for k in ("event", "problem")))
         self.assertEqual("outside its frame interval", self.failure("order_window")["problem"])
+
+    def test_simultaneous_events(self):
+        r = self.r["order_simultaneous_allowed"]
+        self.assertEqual("pass", r["status"])
+        m = r["measurements"]["causal_order"]
+        self.assertEqual([("simultaneous", True), ("effect_after_cause", True)],
+                         [(p["relation"], p["ok"]) for p in m["pairs"]])
+        self.assertEqual(1, m["simultaneous_accepted"])
+        self.assertEqual("pass", self.r["order_simultaneous_lag0"]["status"])
+        f = self.failure("order_simultaneous_other")  # only the named pair may share a frame
+        self.assertEqual(("rebound", "slump", "cause and effect on the same sampled frame"),
+                         (f["cause"], f["effect"], f["problem"]))
+        self.assertEqual("ValueError", self.r["order_simultaneous_unknown"])
+        reversed_pair = self.r["order_reversed"]["measurements"]["causal_order"]["pairs"][0]
+        self.assertEqual(("effect_before_cause", False), (reversed_pair["relation"], reversed_pair["ok"]))
 
     def test_response_to_contact(self):
         m = self.r["response_pass"]["measurements"]["response_to_contact"]
@@ -87,6 +104,31 @@ class ShotTest(unittest.TestCase):
     def test_explicit_camera_and_step(self):
         self.assertEqual("pass", self.r["shot_explicit_camera"]["status"])
         self.assertEqual(3, self.targets("shot_explicit_camera")[0]["frames_checked"])  # 1, 3 and the last frame 4
+
+    def test_objects_left_out_of_the_render_do_not_occlude(self):
+        self.assertEqual("fail", self.r["vis_blocked"]["status"])
+        for key, reason in (("vis_hide_render", "hide_render"), ("vis_camera_off", "visible_camera off"),
+                            ("vis_collection_render", "collection hidden from render"),
+                            ("vis_layer_excluded", "collection excluded from the view layer"),
+                            ("vis_volume_only", "volume-only materials")):
+            self.assertEqual("pass", self.r[key]["status"], key)
+            m = self.r[key]["measurements"]["shot_coverage"]
+            self.assertEqual({"screen": reason}, m["not_rendered"], key)
+            if key != "vis_layer_excluded":  # an excluded collection is not in the depsgraph at all
+                self.assertGreater(m["targets"][0]["passed_through"]["screen"], 0, key)
+
+    def test_rendered_surfaces_still_occlude(self):
+        self.assertEqual("fail", self.r["vis_glass"]["status"])  # transparent but rendered: still a blocker
+        self.assertEqual("fail", self.r["vis_instance"]["status"])  # instance of an excluded collection
+        m = self.r["vis_viewport_hidden"]["measurements"]["shot_coverage"]
+        self.assertEqual("fail", self.r["vis_viewport_hidden"]["status"])
+        self.assertEqual(["collection:props", "eye:screen"], m["unhidden_for_test"])
+        self.assertEqual({"eye": True, "collection": True}, self.r["vis_restored"])
+
+    def test_target_left_out_of_the_render_is_not_seen(self):
+        r = self.r["vis_target_hidden"]
+        self.assertEqual("target not in the final render", r["first_failure"]["problem"])
+        self.assertEqual({"hide_render": [1, 2]}, r["measurements"]["shot_coverage"]["targets"][0]["target_not_rendered"])
 
 
 if __name__ == "__main__":

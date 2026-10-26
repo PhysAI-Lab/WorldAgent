@@ -1,5 +1,8 @@
 {
   "contract": {
+    "simulation_class": [
+      "rigid_body"
+    ],
     "fps": 24,
     "frame_range": [
       1,
@@ -93,6 +96,8 @@
         "self_collision": "none"
       },
       "solver_owner": "fixed scene",
+      "simulation_class": "fixed",
+      "blender_system": "none",
       "allowed_inputs": [],
       "solver_owned_outputs": [],
       "frame_range": [
@@ -124,6 +129,8 @@
         "self_collision": "none"
       },
       "solver_owner": "kinematic input",
+      "simulation_class": "kinematic",
+      "blender_system": "bullet_rigid_body",
       "allowed_inputs": [
         "keyed rotation"
       ],
@@ -157,6 +164,8 @@
         "self_collision": "none"
       },
       "solver_owner": "Bullet rigid body",
+      "simulation_class": "rigid_body",
+      "blender_system": "bullet_rigid_body",
       "allowed_inputs": [],
       "solver_owned_outputs": [
         "location",
@@ -191,6 +200,8 @@
         "self_collision": "none"
       },
       "solver_owner": "Bullet rigid body",
+      "simulation_class": "rigid_body",
+      "blender_system": "bullet_rigid_body",
       "allowed_inputs": [],
       "solver_owned_outputs": [
         "location",

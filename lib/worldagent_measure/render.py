@@ -11,7 +11,11 @@ RenderDeviceError; it never falls back to the CPU.
 
 render_frames() is the Blender side of bin/render_candidate.py, which renders a candidate and
 writes a render report. check_render_report() is for a case's render/media verifier: it
-checks that report against the candidate the verifier has open.
+checks that report against the candidate the verifier has open. check_movie() checks the
+movie bin/render_candidate.py --encode recorded in that report, decoding it with ffprobe.
+
+The movie helpers (ffmpeg_tool, probe_movie, frames_digest) use only ffmpeg/ffprobe and the
+standard library, so bin/render_candidate.py imports this module outside Blender too.
 """
 from __future__ import annotations
 
@@ -19,12 +23,18 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import struct
+import subprocess
 import sys
 import time
+from fractions import Fraction
 from pathlib import Path
 
-import bpy
+try:
+    import bpy
+except ImportError:  # outside Blender: only the movie helpers are usable
+    bpy = None
 
 from worldagent_runtime import value as setting
 
@@ -57,6 +67,13 @@ def default_samples() -> int | None:
     except ValueError:
         return None
     return samples if samples > 0 else None
+
+
+# Movie encoding [bin/render_candidate.py --encode]: H.264 in MP4, 4:2:0, every final frame once.
+MOVIE_CODEC = "h264"
+MOVIE_ENCODER = "libx264"
+MOVIE_PIXEL_FORMAT = "yuv420p"
+MOVIE_CRF = 18
 
 
 class RenderDeviceError(RuntimeError):
@@ -272,5 +289,129 @@ def check_render_report(report_path, case_dir, *, expected_device: str | None = 
         "samples": report.get("samples"), "denoiser": report.get("denoiser"),
         "frames_expected": len(expected_frames), "frames_rendered": len(rendered),
         "missing_frame_count": len(missing), "bad_file_count": len(bad_files),
+    }
+    return Check(name, not failures, measurements, failures[0] if failures else None)
+
+
+class MovieToolUnavailable(RuntimeError):
+    """ffmpeg or ffprobe is missing, so the movie cannot be made or checked; the row is blocked, not failed."""
+
+
+def ffmpeg_tool(name: str) -> tuple[str | None, str | None]:
+    """(path, problem) for 'ffmpeg' or 'ffprobe'.
+
+    $WORLDAGENT_FFMPEG / $WORLDAGENT_FFPROBE when set (a set path that is not an executable
+    is a problem, never skipped); ffprobe next to a configured ffmpeg; else the tool on PATH.
+    """
+    variable = f"WORLDAGENT_{name.upper()}"
+    configured = os.environ.get(variable, "").strip()
+    if configured:
+        if Path(configured).is_file() and os.access(configured, os.X_OK):
+            return configured, None
+        return None, f"{variable} is not an executable file: {configured}"
+    if name == "ffprobe" and os.environ.get("WORLDAGENT_FFMPEG", "").strip():
+        sibling = Path(os.environ["WORLDAGENT_FFMPEG"].strip()).with_name("ffprobe")
+        if sibling.is_file() and os.access(sibling, os.X_OK):
+            return str(sibling), None
+    found = shutil.which(name)
+    if found:
+        return found, None
+    return None, f"{name} not found: install ffmpeg (with ffprobe) or set {variable}"
+
+
+def fps_fraction(fps) -> Fraction:
+    """The scene FPS as an exact rate: 24.0 -> 24, 23.976... -> 24000/1001."""
+    return Fraction(fps).limit_denominator(1001)
+
+
+def frames_digest(files) -> str:
+    """SHA-256 over the ordered frame hashes of a render report's files list."""
+    return hashlib.sha256("\n".join(str(f.get("sha256")) for f in files).encode()).hexdigest()
+
+
+def probe_movie(path, ffprobe: str) -> dict:
+    """Decode every frame of the movie's first video stream with ffprobe; raise RuntimeError when it cannot."""
+    cmd = [ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
+           "-show_entries", "stream=codec_name,pix_fmt,width,height,r_frame_rate,nb_read_frames:format=duration",
+           "-of", "json", str(path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        data = json.loads(proc.stdout)
+        stream = data["streams"][0]
+        rate = Fraction(stream["r_frame_rate"])
+        return {"codec": stream.get("codec_name"), "pixel_format": stream.get("pix_fmt"),
+                "size": [int(stream["width"]), int(stream["height"])],
+                "fps": float(rate), "fps_rational": f"{rate.numerator}/{rate.denominator}",
+                "frame_count": int(stream["nb_read_frames"]),
+                "duration_s": round(float(data["format"]["duration"]), 6)}
+    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError):
+        raise RuntimeError(f"ffprobe could not decode {path}: {proc.stderr.strip()[-300:] or 'no video stream'}")
+
+
+def check_movie(report_path, case_dir, *, name: str = "final_movie") -> Check:
+    """Check the movie recorded in a final render report (bin/render_candidate.py --encode).
+
+    Passes only when the report is a successful final render of the open candidate, its movie
+    was encoded from exactly the report's frames, the movie file exists with its recorded
+    SHA-256, and ffprobe decodes it to the same frame count, FPS and size as the final frames
+    with the recorded codec and pixel format. Use it with check_render_report(), which checks
+    the frames themselves. Pass the report and the movie to the runner with --input.
+    Raises MovieToolUnavailable when the encode was blocked for a missing ffmpeg or ffprobe
+    is missing now: catch it and call verifier.write_blocked(), as for a missing FLIP add-on.
+    """
+    case_dir = Path(case_dir)
+    report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    movie = report.get("movie") if isinstance(report.get("movie"), dict) else {}
+    files = report.get("files") or []
+    if movie.get("status") == "blocked":
+        raise MovieToolUnavailable(movie.get("problem") or "the movie was not encoded: ffmpeg is missing")
+    failures = []
+
+    def need(ok, **failure):
+        if not ok:
+            failures.append(failure)
+
+    need(report.get("status") == "ok" and report.get("mode") == "final", problem="not a successful final render",
+         mode=report.get("mode"), status=report.get("status"))
+    candidate_sha = sha256_file(bpy.data.filepath) if bpy is not None and bpy.data.filepath else None
+    need(report.get("candidate_sha256") == candidate_sha, problem="rendered a different candidate",
+         report_candidate=report.get("candidate"))
+    need(movie.get("status") == "ok", problem="no encoded movie in the report", movie_status=movie.get("status"),
+         detail=movie.get("problem"))
+    need(movie.get("source_frames_sha256") == frames_digest(files),
+         problem="movie was not encoded from this report's frames")
+    path = case_dir / str(movie.get("path") or "")
+    exists = bool(movie.get("path")) and path.is_file()
+    need(exists, problem="movie file missing", path=movie.get("path"))
+    sha_ok = exists and sha256_file(path) == movie.get("sha256")
+    need(not exists or sha_ok, problem="movie hash differs from the report", path=movie.get("path"))
+    probed, ffprobe, problem = None, None, None
+    if exists:
+        ffprobe, problem = ffmpeg_tool("ffprobe")
+        if not ffprobe:
+            raise MovieToolUnavailable(problem)
+        if ffprobe:
+            try:
+                probed = probe_movie(path, ffprobe)
+            except RuntimeError as exc:
+                problem = str(exc)
+        need(probed is not None, problem="movie could not be decoded", detail=problem)
+    if probed:
+        fps = report.get("fps")
+        need(probed["frame_count"] == len(files) == movie.get("frame_count"),
+             problem="movie frame count differs from the final frames", movie_frames=probed["frame_count"],
+             final_frames=len(files), recorded=movie.get("frame_count"))
+        need(fps is not None and abs(probed["fps"] - fps) < 1e-4, problem="movie FPS differs from the render",
+             movie_fps=probed["fps"], render_fps=fps)
+        need(probed["size"] == report.get("resolution"), problem="movie size differs from the render",
+             movie_size=probed["size"], render_size=report.get("resolution"))
+        need((probed["codec"], probed["pixel_format"]) == (movie.get("codec"), movie.get("pixel_format")),
+             problem="movie codec or pixel format differs from the report",
+             movie=[probed["codec"], probed["pixel_format"]], recorded=[movie.get("codec"), movie.get("pixel_format")])
+    measurements = {
+        "report": str(report_path), "movie": movie.get("path"), "movie_status": movie.get("status"),
+        "candidate_matches": report.get("candidate_sha256") == candidate_sha, "hash_matches": sha_ok,
+        "final_frames": len(files), "render_fps": report.get("fps"), "render_resolution": report.get("resolution"),
+        "decoded": probed, "ffprobe": ffprobe,
     }
     return Check(name, not failures, measurements, failures[0] if failures else None)

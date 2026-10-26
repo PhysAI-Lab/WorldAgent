@@ -1,0 +1,96 @@
+{
+  "requirements_matrix": [
+    {
+      "id": "crate_geometry",
+      "text": "Crates and shelf have real geometry and support",
+      "category": "target_asset_realism",
+      "pass_predicate": "Static audit reports zero penetration and zero unsupported objects",
+      "tolerances": [
+        {
+          "quantity": "penetration depth, every reachable pair",
+          "value_m": 0.003,
+          "basis": "screen",
+          "screen_m": 0.003,
+          "solver_m": 0.001,
+          "derivation": "5 px at 1920x1080 with a 50 mm lens and 36 mm sensor at 1.6 m = 3.0 mm; Bullet collision margin 1 mm"
+        }
+      ],
+      "measures": [
+        {
+          "quantity": "unsupported objects",
+          "comparison": "==",
+          "value": 0,
+          "unit": "count"
+        }
+      ],
+      "status": "pass",
+      "evidence": [
+        "reports/verify_crate_geometry_20261018T000000Z.json"
+      ],
+      "verified_by": "src/verify_crate_geometry.py",
+      "input_hashes": {
+        ".work/candidates/c01/scene.blend": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "id": "penetration",
+      "text": "Zero interpenetration across the full range",
+      "category": "physics",
+      "covers": [
+        "fall",
+        "settle"
+      ],
+      "owner": "all solvers",
+      "stage": "2-5",
+      "pass_predicate": "Narrow-phase signed depth <= 0 for every reachable pair on every frame",
+      "tolerances": [
+        {
+          "quantity": "penetration depth, every reachable pair",
+          "value_m": 0.003,
+          "basis": "screen",
+          "screen_m": 0.003,
+          "solver_m": 0.001,
+          "derivation": "5 px at 1920x1080 with a 50 mm lens and 36 mm sensor at 1.6 m = 3.0 mm; Bullet collision margin 1 mm"
+        }
+      ],
+      "status": "fail",
+      "evidence": [
+        "reports/verify_penetration_20261018T000000Z.json"
+      ],
+      "first_failure": {
+        "candidate": "c02",
+        "frame": 131,
+        "pair": [
+          "crate_a",
+          "floor"
+        ]
+      },
+      "reason": "crate_a sinks into the floor on impact",
+      "corrective_action": "Increase rigid-body substeps",
+      "first_revision": "c01",
+      "latest_verified_revision": "c02"
+    },
+    {
+      "id": "fall",
+      "text": "Both crates fall after the shelf tips",
+      "category": "story_time",
+      "pass_predicate": "native asset review by a person",
+      "status": "unknown"
+    },
+    {
+      "id": "liquid_spill",
+      "text": "Spilled liquid surface",
+      "category": "physics",
+      "pass_predicate": "Surface cache complete for every frame",
+      "measures": [
+        {
+          "quantity": "frames with a surface cache file",
+          "comparison": "==",
+          "value": "every frame"
+        }
+      ],
+      "status": "blocked",
+      "reason": "FLIP Fluids add-on not installed"
+    }
+  ]
+}

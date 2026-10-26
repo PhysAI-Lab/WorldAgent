@@ -86,6 +86,17 @@ def main():
                                              windows={"push": (1, 10), "spill": (15, 25)}))
     out["order_reversed"] = as_dict(causal.order(events, [("spill", "push")], min_lag_frames=1))
     out["order_same_frame"] = as_dict(causal.order({"a": 9, "b": 9}, [("a", "b")], min_lag_frames=1))
+    same = {"contact": 9, "squash": 9, "rebound": 12, "slump": 12}
+    out["order_simultaneous_allowed"] = as_dict(causal.order(same, [("contact", "squash"), ("squash", "rebound")],
+                                                             min_lag_frames=1, allow_simultaneous=[("contact", "squash")]))
+    out["order_simultaneous_lag0"] = as_dict(causal.order(same, [("contact", "squash")], min_lag_frames=0))
+    out["order_simultaneous_other"] = as_dict(causal.order(same, [("contact", "squash"), ("rebound", "slump")],
+                                                           min_lag_frames=1, allow_simultaneous=[("contact", "squash")]))
+    try:
+        causal.order(same, [("contact", "squash")], min_lag_frames=1, allow_simultaneous=[("squash", "rebound")])
+        out["order_simultaneous_unknown"] = None
+    except ValueError as exc:
+        out["order_simultaneous_unknown"] = type(exc).__name__
     out["order_too_late"] = as_dict(causal.order(events, [("push", "slide")], min_lag_frames=1, max_lag_frames=2))
     out["order_missing"] = as_dict(causal.order({"push": hit, "flood": never}, [("push", "flood")], min_lag_frames=1))
     out["order_window"] = as_dict(causal.order(events, [], min_lag_frames=0, windows={"spill": (1, 10)}))
@@ -123,7 +134,75 @@ def main():
     out["shot_no_camera"] = as_dict(shot.coverage([(target, (1, 2))], min_visible_fraction=0.5, min_frame_fraction=1.0))
     out["shot_explicit_camera"] = as_dict(shot.coverage([(target, (1, 4))], camera=camera, frame_step=2,
                                                         min_visible_fraction=0.5, min_frame_fraction=1.0))
+    render_visibility_cases(out)
     emit(out)
+
+
+def material(name, surface=True, volume=False):
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    tree = mat.node_tree
+    tree.nodes.clear()
+    output = tree.nodes.new("ShaderNodeOutputMaterial")
+    if surface:
+        tree.links.new(tree.nodes.new("ShaderNodeBsdfGlass").outputs[0], output.inputs["Surface"])
+    if volume:
+        tree.links.new(tree.nodes.new("ShaderNodeVolumePrincipled").outputs[0], output.inputs["Volume"])
+    return mat
+
+
+def render_visibility_cases(out):
+    """Camera at y = -10 looking along +y; `screen` (3 m cube at y = -3) hides `target` unless rays pass it."""
+    reset()
+    target = cube("target", 1, (0, 0, 0.5))
+    coll = bpy.data.collections.new("props")
+    bpy.context.scene.collection.children.link(coll)
+    screen = cube("screen", 3, (0, -3, 0.5))
+    for c in screen.users_collection:
+        c.objects.unlink(screen)
+    coll.objects.link(screen)
+    bpy.ops.object.camera_add(location=(0, -10, 0.5), rotation=(math.pi / 2, 0, 0))
+    bpy.context.scene.camera = bpy.context.active_object
+    bpy.context.scene.camera.data.lens = 18
+    layer = bpy.context.view_layer.layer_collection.children["props"]
+
+    def run(key):
+        out[key] = as_dict(shot.coverage([(target, (1, 2))], min_visible_fraction=0.5, min_frame_fraction=1.0))
+
+    run("vis_blocked")
+    screen.hide_render = True
+    run("vis_hide_render")
+    screen.hide_render = False
+    screen.visible_camera = False
+    run("vis_camera_off")
+    screen.visible_camera = True
+    coll.hide_render = True
+    run("vis_collection_render")
+    coll.hide_render = False
+    layer.exclude = True
+    run("vis_layer_excluded")
+    layer.exclude = False
+    screen = bpy.data.objects["screen"]
+    screen.data.materials.append(material("smoke", surface=False, volume=True))
+    run("vis_volume_only")
+    screen.data.materials[0] = material("glass_with_volume", surface=True, volume=True)
+    run("vis_glass")
+    screen.data.materials.clear()
+    screen.hide_set(True)
+    coll.hide_viewport = True
+    run("vis_viewport_hidden")
+    out["vis_restored"] = {"eye": screen.hide_get(), "collection": coll.hide_viewport}
+    screen.hide_set(False)
+    coll.hide_viewport = False
+    screen.hide_render = True
+    target.hide_render = True
+    run("vis_target_hidden")
+    target.hide_render = False
+    screen.hide_render = False
+    # an instance of the screen (1 m nearer the camera), whose own collection is excluded, still blocks
+    layer.exclude = True
+    bpy.ops.object.collection_instance_add(collection="props", location=(0, -1, 0))
+    run("vis_instance")
 
 
 main()

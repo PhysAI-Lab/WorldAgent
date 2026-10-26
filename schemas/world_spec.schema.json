@@ -87,11 +87,33 @@
     },
     "object_contract": {
       "type": "object",
-      "required": ["name", "role", "solver_owner", "visible_mesh", "simulation_mesh", "dimensions_m", "acceptance"],
+      "required": ["name", "role", "solver_owner", "simulation_class", "blender_system", "visible_mesh", "simulation_mesh", "dimensions_m", "acceptance"],
       "properties": {
         "name": { "type": "string", "minLength": 1, "description": "Blender object name." },
         "role": { "type": "string", "description": "[non-penetration-contract.en.md Identity]" },
         "solver_owner": { "type": "string", "description": "The one solver that owns the claimed output, free text, e.g. 'fixed authored environment' [non-penetration-contract.en.md Solver ownership]." },
+        "simulation_class": {
+          "enum": ["rigid_body", "cloth", "liquid", "gas", "particles", "granular_approximation", "soft_body", "fixed", "kinematic"],
+          "description": "Physical target of this object [SKILL.md 'Solver Classification']: the case classes of contract.simulation_class except coupled, plus fixed and kinematic for objects no solver moves. Names and preferred systems: schemas/solver_classes.json."
+        },
+        "blender_system": {
+          "enum": ["bullet_rigid_body", "cloth", "flip_fluids", "mantaflow_liquid", "mantaflow_gas", "newton_particles", "sph_particles", "soft_body", "none"],
+          "description": "The Blender system that simulates this object; none for a plain collider or keyed object."
+        },
+        "solver_choice_reason": {
+          "type": ["object", "null"],
+          "required": ["reason", "evidence"],
+          "properties": {
+            "reason": { "type": "string", "minLength": 1 },
+            "evidence": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1,
+              "description": "Case-relative paths of measured reports (probe or verifier reports, trace) that show why the preferred system was not used."
+            }
+          },
+          "description": "Required when blender_system is not a preferred system for simulation_class in schemas/solver_classes.json [bin/spec_audit.py solver_choice]."
+        },
         "visible_mesh": { "type": "string" },
         "simulation_mesh": { "type": "string" },
         "proxy": { "type": ["string", "null"], "description": "Documented proxy, null if none." },

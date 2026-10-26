@@ -35,7 +35,9 @@ class CaseTest(unittest.TestCase):
         # A render row, as every case has one; limit does not require it to be measured.
         m = gc.read_manifest(self.case)
         m["requirements_matrix"].append({"id": "render", "text": "final render", "category": "media",
-                                         "pass_predicate": "measured", "status": "unknown", "covers": []})
+                                         "pass_predicate": "measured", "status": "unknown", "covers": [],
+                                         "measures": [{"quantity": "rendered frames", "comparison": "==",
+                                                       "value": 240}]})
         gc.write_manifest(self.case, m)
 
     def tearDown(self):

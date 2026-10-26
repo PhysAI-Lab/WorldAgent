@@ -32,7 +32,17 @@
         },
         "owner": { "type": "string" },
         "stage": { "type": "string", "description": "Pipeline stage, e.g. '1E', '2-5'." },
-        "pass_predicate": { "type": "string", "minLength": 1, "description": "Pass threshold [13.1]." },
+        "pass_predicate": { "type": "string", "minLength": 1, "description": "Pass threshold [13.1], for people. The numbers it uses are stated again in tolerances and measures, which bin/spec_audit.py checks." },
+        "tolerances": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/tolerance" },
+          "description": "(plugin) Every distance, penetration, position or error tolerance the predicate uses, with where it comes from [bin/spec_audit.py tolerance_basis]."
+        },
+        "measures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/measure" },
+          "description": "(plugin) Other measured quantities the predicate compares (speeds, counts, fractions, lower bounds on distance). A row needs at least one tolerance or measure: a judgement nobody can measure is not a row [bin/spec_audit.py measurable]."
+        },
         "status": {
           "type": "string",
           "enum": ["pass", "fail", "unknown", "blocked", "stale"],
@@ -67,6 +77,10 @@
           "description": "(plugin) SHA-256 of each input the evidence was measured on (candidate .blend, cache, manifest, and the verifier script itself), keyed by path. A mismatch makes the row stale."
         }
       },
+      "anyOf": [
+        { "required": ["tolerances"], "properties": { "tolerances": { "minItems": 1 } } },
+        { "required": ["measures"], "properties": { "measures": { "minItems": 1 } } }
+      ],
       "allOf": [
         {
           "if": { "properties": { "status": { "const": "pass" } } },
@@ -89,6 +103,47 @@
           "then": { "required": ["input_hashes"] }
         }
       ]
+    },
+    "tolerance": {
+      "description": "One tolerance and its basis. Default rule: value_m = max(screen_m, solver_m), where screen_m is 5 pixels at the final delivery resolution at that distance (worldagent_measure.scale.pixel_footprint) and solver_m is the solver's resolution (collision margin for rigid bodies, one grid cell for grid solvers, collision distance for cloth and soft body). A smaller value only when the request asks for that precision (basis request). Numeric tolerances (centre of mass, volume) are a ratio of the object's size, not an absolute length.",
+      "type": "object",
+      "required": ["quantity", "basis", "derivation"],
+      "properties": {
+        "quantity": { "type": "string", "minLength": 1, "description": "What is measured, e.g. 'penetration depth crate_a vs floor'." },
+        "value_m": { "type": "number", "exclusiveMinimum": 0, "description": "Tolerance as a length in metres." },
+        "ratio": { "type": "number", "exclusiveMinimum": 0, "description": "Tolerance as a fraction of the length named in of." },
+        "of": { "type": "string", "minLength": 1, "description": "The length a ratio refers to, e.g. 'crate_a bbox diagonal'." },
+        "basis": { "enum": ["screen", "solver", "numeric", "request"] },
+        "screen_m": { "type": "number", "exclusiveMinimum": 0, "description": "5 pixels at the final delivery resolution at that distance, in metres." },
+        "solver_m": { "type": "number", "minimum": 0, "description": "The solver's resolution in metres." },
+        "derivation": { "type": "string", "minLength": 1, "description": "The calculation, e.g. '5 px at 1920x1080 from the camera at 1.6 m = 3.0 mm' or 'Bullet collision margin 1 mm', or the request clause for basis request." }
+      },
+      "oneOf": [
+        { "required": ["value_m"], "not": { "required": ["ratio"] } },
+        { "required": ["ratio", "of"], "not": { "required": ["value_m"] } }
+      ],
+      "allOf": [
+        { "if": { "required": ["basis"], "properties": { "basis": { "const": "numeric" } } }, "then": { "required": ["ratio"] } },
+        { "if": { "required": ["basis"], "properties": { "basis": { "const": "screen" } } }, "then": { "required": ["value_m", "screen_m"] } },
+        { "if": { "required": ["basis"], "properties": { "basis": { "const": "solver" } } }, "then": { "required": ["value_m", "solver_m"] } }
+      ]
+    },
+    "measure": {
+      "description": "One measured quantity and its comparison, e.g. {quantity: 'crate speed, last second', comparison: '<', value: 0.05, unit: 'm/s'}. An upper bound or equality on a length belongs in tolerances.",
+      "type": "object",
+      "required": ["quantity", "comparison", "value"],
+      "properties": {
+        "quantity": { "type": "string", "minLength": 1 },
+        "comparison": { "enum": ["<", "<=", ">", ">=", "==", "!=", "within"] },
+        "value": {
+          "anyOf": [
+            { "type": ["number", "boolean", "string"] },
+            { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }
+          ],
+          "description": "Threshold; [low, high] for within."
+        },
+        "unit": { "type": "string", "description": "e.g. 'm/s', 'frames', '%', 'count'." }
+      }
     }
   }
 }

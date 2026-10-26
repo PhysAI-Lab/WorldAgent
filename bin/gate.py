@@ -39,7 +39,10 @@ moving a beat's window is how a check gets weaker without any verdict being fake
 person should look at each listed change before accepting the result.
 `spec_baseline` compares the world spec with the one frozen when the spec audit first
 passed (bin/spec_audit.py) and lists what changed since: object sizes, beats, inputs and
-topology changed before any row was measured show up here too. `limited` reports whether
+topology changed before any row was measured show up here too. `solver_deviations` lists every
+object simulated by a Blender system that is not preferred for its simulation_class
+(schemas/solver_classes.json), with the recorded solver_choice_reason, so a person can judge
+the reason; a deviation without a reason already fails the spec audit. `limited` reports whether
 a `limited` case status was recorded by bin/limit.py (runner results on every non-render
 row) or written some other way.
 
@@ -297,6 +300,7 @@ def evaluate(case_dir: Path, candidate: Path | None = None, manifest: dict | Non
         "rows": verdicts,
         "contract_changes": contract_changes(rows),
         "spec_baseline": spec_baseline(case_dir, manifest),
+        "solver_deviations": spec_audit.solver_deviations(manifest),
         "limited": limited_status(case_dir, manifest),
     }
 
@@ -332,6 +336,7 @@ def main() -> None:
                                  "errors": len(report.get("errors", [])),
                                  "contract_changes": [c["row"] for c in report.get("contract_changes", [])],
                                  "spec_changed_since_baseline": (report.get("spec_baseline") or {}).get("changed"),
+                                 "solver_deviations": [d["object"] for d in report.get("solver_deviations", [])],
                                  "marked_stale": report.get("marked_stale", [])})
     text = json.dumps(report, indent=2, ensure_ascii=False)
     if args.out:
