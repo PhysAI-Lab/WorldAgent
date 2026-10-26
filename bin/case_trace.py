@@ -65,22 +65,43 @@ def _ids(items, key: str) -> set:
     return {i.get(key) for i in items or [] if isinstance(i, dict) and i.get(key) is not None}
 
 
+# Fields that say how the scene is built, not what it must show: a change there is listed under
+# diff["implementation"], apart from requirement changes.
+IMPLEMENTATION_FIELDS = {"objects": ("solver_owner", "allowed_inputs", "solver_owned_outputs"), "beats": ("owner", "allowed_inputs")}
+
+
 def spec_diff(old: dict, new: dict) -> dict:
-    """Added/removed/changed beats, objects and regions, and changed contract fields."""
+    """Added/removed/changed beats, objects, regions and solver graph nodes and edges, and changed contract fields.
+
+    A beat or object whose only change is in IMPLEMENTATION_FIELDS is not listed as changed;
+    diff["implementation"][label][id] names the implementation fields that changed.
+    """
     diff = {}
 
     def compare(label, old_items, new_items, key):
         a = {i[key]: i for i in old_items or [] if isinstance(i, dict) and key in i}
         b = {i[key]: i for i in new_items or [] if isinstance(i, dict) and key in i}
+        built = IMPLEMENTATION_FIELDS.get(label, ())
+        strip = lambda item: {k: v for k, v in item.items() if k not in built}  # noqa: E731
+        both = sorted(set(a) & set(b))
         part = {"added": sorted(set(b) - set(a)), "removed": sorted(set(a) - set(b)),
-                "changed": sorted(k for k in set(a) & set(b) if a[k] != b[k])}
+                "changed": [k for k in both if strip(a[k]) != strip(b[k])]}
         if any(part.values()):
             diff[label] = part
+        fields = {k: [f for f in built if a[k].get(f) != b[k].get(f)] for k in both}
+        fields = {k: v for k, v in fields.items() if v}
+        if fields:
+            diff.setdefault("implementation", {})[label] = fields
 
     story = lambda s: ((s.get("contract") or {}).get("story") or {}).get("beats")  # noqa: E731
     compare("beats", story(old), story(new), "id")
     compare("objects", old.get("object_contracts"), new.get("object_contracts"), "name")
     compare("regions", (old.get("topology") or {}).get("regions"), (new.get("topology") or {}).get("regions"), "id")
+    graph = lambda s: (s.get("topology") or {}).get("solver_graph") or {}  # noqa: E731
+    compare("solver_graph_nodes", graph(old).get("nodes"), graph(new).get("nodes"), "id")
+    compare("solver_graph_edges", graph(old).get("edges"), graph(new).get("edges"), "id")
+    if graph(old).get("bake_order") != graph(new).get("bake_order"):
+        diff["solver_graph_bake_order"] = "changed"
     old_c, new_c = old.get("contract") or {}, new.get("contract") or {}
     fields = sorted(k for k in set(old_c) | set(new_c) if k != "story" and old_c.get(k) != new_c.get(k))
     if fields:

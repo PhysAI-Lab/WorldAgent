@@ -39,7 +39,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 from .geometry import WorldMesh, aabb_overlap, depsgraph, set_frame, world_mesh
-from .verifier import Check
+from .verifier import CacheMissing, Check
 
 FLIP_ADDON = "flip_fluids_addon"
 # Face area at or below this counts as zero-area.
@@ -55,7 +55,7 @@ class FlipUnavailable(RuntimeError):
     """FLIP Fluids is needed but not installed/enabled; the case writes verifier.write_blocked(...)."""
 
 
-class LiquidCacheMissing(RuntimeError):
+class LiquidCacheMissing(CacheMissing):
     """The solver has no baked liquid surface for a frame, so there is nothing to measure."""
 
 

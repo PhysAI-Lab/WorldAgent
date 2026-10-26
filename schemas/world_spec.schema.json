@@ -37,10 +37,11 @@
       "type": "object",
       "required": ["beats"],
       "properties": {
-        "long_form": { "type": "boolean" },
+        "long_form": { "type": "boolean", "description": "Long-form classification [simulation-workflow.en.md 1.2]. Wording about delivery or rendering (e.g. 'Final ... render') never makes a request long-form. When true and requested_duration_seconds is absent, contract.frame_range must last at least 12 s [bin/spec_audit.py duration]." },
         "prompt_length_chars": { "type": "integer", "minimum": 0 },
         "required_beat_count": { "type": "integer", "minimum": 0 },
-        "minimum_duration_seconds": { "type": "number", "minimum": 0 },
+        "minimum_duration_seconds": { "type": "number", "minimum": 0, "description": "Total minimum duration; contract.frame_range must last at least this long at contract.fps [bin/spec_audit.py duration]." },
+        "requested_duration_seconds": { "type": ["number", "null"], "exclusiveMinimum": 0, "description": "Duration stated in the request, if any. It takes precedence: the long-form minimum duration applies only when the request states none [simulation-workflow.en.md 1.2]." },
         "duration_formula": { "type": "string" },
         "preroll_seconds": { "type": "number", "minimum": 0 },
         "establishment_seconds": { "type": "number", "minimum": 0 },
@@ -77,6 +78,21 @@
           "items": { "type": "string" }
         },
         "pass_predicate": { "type": "string", "minLength": 1, "description": "Checkable required outcome [paper A.1.1 'predicate']." },
+        "interactions": {
+          "description": "Claims in this beat that one solver_graph node moves, deforms, displaces or triggers an object of another node [paper 3.2.2 'Causal'; A.1.2]. bin/spec_audit.py coupling_claim matches each against the graph's edges.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["cause", "effect", "kind"],
+            "properties": {
+              "cause": { "type": "string", "minLength": 1, "description": "Driver node id." },
+              "effect": { "type": "string", "minLength": 1, "description": "object_contracts name in another node." },
+              "kind": { "enum": ["translate", "rotate", "deform", "displace", "trigger"] },
+              "achievable": { "type": "boolean", "description": "false: agreed with the user that no channel provides this; the covering row is reported blocked." },
+              "reason": { "type": "string", "description": "Why it is not achievable; required with achievable false." }
+            }
+          }
+        },
         "evidence": { "type": "string", "description": "Camera and numeric evidence source [skill.md:74]." },
         "status": {
           "type": "string",
@@ -94,11 +110,11 @@
         "solver_owner": { "type": "string", "description": "The one solver that owns the claimed output, free text, e.g. 'fixed authored environment' [non-penetration-contract.en.md Solver ownership]." },
         "simulation_class": {
           "enum": ["rigid_body", "cloth", "liquid", "gas", "particles", "granular_approximation", "soft_body", "fixed", "kinematic"],
-          "description": "Physical target of this object [SKILL.md 'Solver Classification']: the case classes of contract.simulation_class except coupled, plus fixed and kinematic for objects no solver moves. Names and preferred systems: schemas/solver_classes.json."
+          "description": "Physical target of this object [SKILL.md 'Solver Classification']: the case classes of contract.simulation_class except coupled, plus fixed and kinematic for objects no solver moves. An object that only has a Fluid Flow, Fluid Effector, Collision or force-field role (emitter, obstacle, collider) is fixed or kinematic, not the class of the domain or body it acts on. Names and preferred systems: schemas/solver_classes.json."
         },
         "blender_system": {
           "enum": ["bullet_rigid_body", "cloth", "flip_fluids", "mantaflow_liquid", "mantaflow_gas", "newton_particles", "sph_particles", "soft_body", "none"],
-          "description": "The Blender system that simulates this object; none for a plain collider or keyed object."
+          "description": "The Blender system that simulates this object; none for a plain collider or keyed object. Only the simulated object carries the system (the gas or liquid domain, the cloth, the soft body, the active rigid body, the owner of a simulated particle system); an emitter, obstacle or collider with only a Fluid Flow, Fluid Effector, Collision or force-field role is none (systems.physics_roles lists roles). A passive or animated rigid body in the rigid body world is bullet_rigid_body."
         },
         "solver_choice_reason": {
           "type": ["object", "null"],
@@ -126,7 +142,7 @@
         },
         "mass_kg": { "type": ["number", "null"], "exclusiveMinimum": 0 },
         "density_kg_m3": { "type": ["number", "null"], "exclusiveMinimum": 0 },
-        "initial_support": { "type": "string", "description": "Supporting object name or 'foundation' [non-penetration-contract.en.md support chain]." },
+        "initial_support": { "type": "string", "description": "Supporting object name, 'foundation' or 'ground' [non-penetration-contract.en.md support chain]; several joined with '|'. Omit it for an object released in free fall (dropped, thrown, or airborne at the first frame)." },
         "collision": {
           "type": "object",
           "properties": {
@@ -178,7 +194,66 @@
           "description": "Each edge is [from, connection, to] [paper A.2.1 navigability]."
         },
         "support": { "type": "string" },
-        "coupling": { "type": "array", "items": { "type": "string" } }
+        "coupling": { "type": "array", "items": { "type": "string" }, "description": "Prose notes only; the checked coupling graph is solver_graph." },
+        "solver_graph": { "$ref": "#/$defs/solver_graph" }
+      }
+    },
+    "solver_graph": {
+      "description": "Coupling graph [paper A.1.2 'coupling direction, exchanged variables, state ownership, driving boundaries, and bake order'; material-playbooks.en.md section 7]: one node per solver bake (or per input), one edge per one-way state transfer, and the bake order. A solver node's solver is the common blender_system of its objects. Channels and what each provides: schemas/coupling_channels.json. Required when objects are simulated by two or more Blender systems or contract.simulation_class lists coupled [bin/spec_audit.py solver_graph_required].",
+      "type": "object",
+      "required": ["nodes", "edges", "bake_order"],
+      "properties": {
+        "nodes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/solver_node" } },
+        "edges": { "type": "array", "items": { "$ref": "#/$defs/solver_edge" } },
+        "bake_order": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Node ids, each once, in the order their caches are baked; input nodes included."
+        }
+      }
+    },
+    "solver_node": {
+      "type": "object",
+      "required": ["id", "objects"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "objects": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Solver node: the object_contracts it simulates, all with one blender_system. Input node: the driving objects, kinematic object contracts or names listed in an allowed_inputs."
+        },
+        "input": {
+          "enum": ["keyed", "force_field"],
+          "description": "Set for a node that is not a solver bake: keyed (keyed or driven motion, kinematic bodies, keyed constraint values) or force_field (force field objects)."
+        },
+        "domain": { "type": "string", "minLength": 1, "description": "Fluid nodes (flip_fluids, mantaflow_*): Blender name of the domain object when it is not one of objects." },
+        "cache": { "type": "string", "description": "Case-relative cache directory, or 'in .blend' for a point cache kept in the file." }
+      }
+    },
+    "solver_edge": {
+      "type": "object",
+      "required": ["id", "from", "to", "channel", "objects", "omitted_reactions"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "from": { "type": "string", "description": "Driver node id." },
+        "to": { "type": "string", "description": "Driven node id." },
+        "channel": {
+          "enum": ["effector", "flow_source", "obstacle", "collision", "hook", "force_field", "field_flow", "kinematic_boundary", "event_timing", "scripted_transfer"],
+          "description": "How the state passes; schemas/coupling_channels.json lists which systems each channel joins."
+        },
+        "objects": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "description": "Driver-node objects (or its domain) that act through the channel." },
+        "targets": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Driven-node objects the edge acts on; omitted: all of them." },
+        "via": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Blender objects that carry the channel but are not driver objects: the Fluid Flow field, the hook target, the motor constraint object a script writes." },
+        "exchanged": { "type": "array", "items": { "type": "string" }, "description": "State the driven solver reads, e.g. 'pose per frame', 'grid velocity'." },
+        "omitted_reactions": { "type": "array", "items": { "type": "string" }, "description": "What the driven side would push back and does not, e.g. 'water pressure and buoyancy on the crate'. May be empty only for an input-node driver or event_timing." },
+        "approximation": { "type": "string", "description": "Required for channels marked approximation in schemas/coupling_channels.json: what is approximated and how." },
+        "method": { "type": "string", "description": "scripted_transfer only: case-relative script path, then ': ' and what it computes." },
+        "assumptions": { "type": "array", "items": { "type": "string" }, "description": "scripted_transfer only: assumed values, e.g. 'density 1000 kg/m3', 'Cd = 1'." },
+        "settings": {
+          "type": "object",
+          "description": "Blender values the coupling depends on, keyed '<object>.<RNA path>' (or an RNA path that applies to every via object), e.g. {'field.flow': 1.0} for a field_flow carrier; worldagent_measure.coupling.graph_links compares them with the scene."
+        }
       }
     }
   }

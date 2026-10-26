@@ -19,8 +19,9 @@ non-penetration-contract.en.md Promotion]. Steps:
 4. run the gate on --candidate; if it fails, nothing is promoted;
 5. copy the candidate and check the copy's hash equals the hash every row was
    measured on;
-6. move an existing final scene to .work/superseded/ with a timestamp (never
-   deleted), install the copy, write the gate report to reports/, set manifest
+6. move an existing final scene (and its portable copy) to .work/superseded/
+   with a timestamp (never deleted), install the copy, write the portable copy
+   when one is needed (below), write the gate report to reports/, set manifest
    status "validated",
    validation.passed true, validation.gate_report, artifacts.final_scene
    "scene_final.blend", and add the report to artifacts.reports;
@@ -29,18 +30,35 @@ non-penetration-contract.en.md Promotion]. Steps:
 The output and the gate report list `contract_changes`: rows whose verifier, pass_predicate,
 tolerances, measures, world spec or case-local .py inputs were changed after a non-pass
 measurement; `spec_baseline`: what changed in the world spec since it was frozen at the first
-passing spec audit; and `solver_deviations`: objects simulated by a Blender system that is not
-preferred for their simulation_class, with the recorded reason (bin/gate.py REVIEW).
+passing spec audit; `solver_deviations`: objects simulated by a Blender system that is not
+preferred for their simulation_class, with the recorded reason; and `coupling`: approximated
+couplings and the claims they provide, claims marked achievable: false, and omitted reactions,
+each claim with its covering rows' verdicts (bin/gate.py REVIEW).
 They do not block promotion; they are what a person should diff before trusting the result.
 
 `final_relative_paths` (output and gate report) lists the `//` paths the runner rebased while
 re-verifying (its reports' `rebased_paths`) that resolve to a different place from
 scene_final.blend in the case root than from the candidate's folder: a cache written as
 `//../../cache/...` next to .work/candidates/<id>/, or a disk point cache, which Blender reads
-from `//blendcache_scene_final/`. Promote does not rewrite them: saving a rewritten copy
-would change the bytes, and the final scene must be the file every row was measured on.
-Opening scene_final.blend directly reads those caches only once they are moved there or
-written as absolute paths. Listed for review; it does not block promotion.
+from `//blendcache_scene_final/`. scene_final.blend keeps them as they are: it must be the
+file every row was measured on, byte for byte.
+
+When that list is not empty, promote also writes the delivery copy scene_final_portable.blend
+in the case root. A fresh Blender opens the installed scene_final.blend, rewrites only the
+listed paths to `//` paths that name, from the case root, the same folders the candidate
+used (worldagent_runtime.rebase_paths with relative_to), and saves a copy without Blender's
+own relative-path remapping. A second fresh Blender reopens the saved copy from the case root
+and checks that (a) every rewritten path resolves to the folder the candidate's path resolved
+to, through the runner's own rebase, and (b) nothing else changed: the static
+worldagent_runtime.scene_signature (datablock counts, objects with matrices, modifier stacks and
+particle systems, mesh vertex and face hashes, scene frame range and fps, every other path) of
+the copy equals that of scene_final.blend. No frame is evaluated, so checking the copy never
+simulates into the shared cache. Disk point caches cannot be renamed (Blender always reads
+`//blendcache_<file name>/`) and are listed as not rewritten. Output and gate report carry
+`portable_scene`: null when no path needed it, else {path, sha256, rewritten: [{datablock,
+property, from, to, resolves_to}], not_rewritten, verified: true}, or {path: null, verified:
+false, problem, not_rewritten} when the copy could not be made or verified; then no copy is
+left in the case root and promotion still succeeds with scene_final.blend.
 
 Failed candidates stay under .work/ untouched [paper A.2.2 'Feedback and
 acceptance']. Standard library only.
@@ -68,6 +86,8 @@ import run_verifier  # noqa: E402
 import case_trace  # noqa: E402  (case history; never affects a verdict)
 
 FINAL_NAME = "scene_final.blend"
+PORTABLE_NAME = "scene_final_portable.blend"
+LIB_DIR = Path(__file__).resolve().parents[1] / "lib"
 LAYOUT_CHECK = Path(__file__).resolve().parents[1] / "scripts" / "check_case_layout.py"
 RUNNER = Path(__file__).resolve().parent / "run_verifier.py"
 
@@ -165,6 +185,108 @@ def final_relative_paths(case_dir: Path, reverified: list[dict]) -> list[dict]:
     return out
 
 
+# Blender-side steps of portable_copy(); ARGS is a JSON object defined before each runs.
+_REWRITE = """
+import bpy, json, sys
+sys.path.insert(0, ARGS["lib"])
+import worldagent_runtime as rt
+only = {tuple(k) for k in ARGS["only"]}
+before = rt.scene_signature(ignore=only)
+entries = rt.rebase_paths(ARGS["candidate_dir"], relative_to=ARGS["case_dir"], only=only)
+bpy.ops.wm.save_as_mainfile(filepath=ARGS["save_to"], copy=True, relative_remap=False)
+json.dump({"signature": before, "entries": entries}, open(ARGS["out"], "w"))
+"""
+_CHECK = """
+import json, sys
+sys.path.insert(0, ARGS["lib"])
+import worldagent_runtime as rt
+only = {tuple(k) for k in ARGS["only"]}
+after = rt.scene_signature(ignore=only)
+resolved = rt.rebase_paths(ARGS["case_dir"], only=only)
+json.dump({"signature": after, "entries": resolved}, open(ARGS["out"], "w"))
+"""
+
+
+def _blender_step(blender: str, blend: Path, code: str, args: dict, cwd: Path) -> dict:
+    out = Path(args["out"])
+    expr = f"ARGS = {json.dumps(args)}\n{code}"
+    proc = subprocess.run([blender, "--background", "--factory-startup", str(blend), "--python-exit-code", "1",
+                           "--python-expr", expr], capture_output=True, text=True, cwd=cwd, timeout=1800)
+    try:
+        return json.loads(out.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        tail = " | ".join((proc.stdout + proc.stderr).strip().splitlines()[-5:])
+        raise RuntimeError(f"Blender exited {proc.returncode} before writing its result: {tail}")
+    finally:
+        out.unlink(missing_ok=True)
+
+
+def portable_copy(case_dir: Path, candidate: Path, listed: list[dict], stamp: str) -> dict | None:
+    """Write scene_final_portable.blend from the installed final scene (see the module docstring).
+
+    listed is final_relative_paths(). Returns the `portable_scene` record, or None when listed
+    is empty. Never raises: a failure is returned as {path: None, verified: False, problem,
+    not_rewritten} with no copy left in the case root.
+    """
+    if not listed:
+        return None
+    disk_cache = os.path.normpath(str(case_dir / f"blendcache_{Path(FINAL_NAME).stem}"))
+    rewritable = [e for e in listed if e.get("final_resolves_to") != disk_cache]
+    keys = sorted({(e["datablock"], e["property"]) for e in rewritable})
+    not_rewritten = [{"datablock": e["datablock"], "property": e["property"], "from": e["from"],
+                      "reason": "a disk point cache is always read from //blendcache_<file name>/"}
+                     for e in listed if e not in rewritable]
+    portable = case_dir / PORTABLE_NAME
+    staging = case_dir / ".work" / f"portable_{stamp}.blend"
+    problem = None
+    try:
+        if not keys:
+            raise RuntimeError("no listed path can be rewritten")
+        info = run_verifier.worldagent_env.find_blender()
+        if not info["path"]:
+            raise RuntimeError(info["problem"])
+        # Blender writes side files into its working folder; keep them under .work/ as the runner does.
+        cwd = case_dir / ".work" / "blender"
+        cwd.mkdir(parents=True, exist_ok=True)
+        common = {"lib": str(LIB_DIR), "case_dir": str(case_dir), "candidate_dir": str(candidate.parent),
+                  "only": keys}
+        made = _blender_step(info["path"], case_dir / FINAL_NAME, _REWRITE,
+                             {**common, "save_to": str(staging), "out": str(cwd / f"portable_{stamp}_made.json")}, cwd)
+        if not staging.is_file():
+            raise RuntimeError("Blender did not save the portable copy")
+        os.replace(staging, portable)
+        checked = _blender_step(info["path"], portable, _CHECK,
+                                {**common, "out": str(cwd / f"portable_{stamp}_checked.json")}, cwd)
+        if checked["signature"] != made["signature"]:
+            changed = sorted(k for k in set(made["signature"]) | set(checked["signature"])
+                             if made["signature"].get(k) != checked["signature"].get(k))
+            raise RuntimeError("the copy differs from scene_final.blend beyond the rewritten paths: "
+                               + ", ".join(changed))
+        now = {(e["datablock"], e["property"]): e for e in checked["entries"]}
+        rewritten = []
+        for entry in made["entries"]:
+            if entry.get("read_from_copy"):
+                continue
+            expected = os.path.normpath(os.path.join(str(candidate.parent), entry["from"][2:]))
+            found = now.get((entry["datablock"], entry["property"]))
+            if found is None or found["from"] != entry["to"] or found["to"] != expected:
+                raise RuntimeError(f"{entry['datablock']} {entry['property']} resolves to "
+                                   f"{found and found['to']!r} from the case root, not {expected!r}")
+            rewritten.append({"datablock": entry["datablock"], "property": entry["property"],
+                              "from": entry["from"], "to": entry["to"], "resolves_to": expected})
+        missing = sorted(set(keys) - {(e["datablock"], e["property"]) for e in rewritten})
+        if missing:
+            raise RuntimeError(f"listed paths not found in the final scene: {missing}")
+    except (RuntimeError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+        problem = str(exc)
+    if problem is not None:
+        staging.unlink(missing_ok=True)
+        portable.unlink(missing_ok=True)
+        return {"path": None, "verified": False, "problem": problem, "not_rewritten": not_rewritten}
+    return {"path": PORTABLE_NAME, "sha256": run_verifier.sha256_file(portable), "rewritten": rewritten,
+            "not_rewritten": not_rewritten, "verified": True}
+
+
 def main() -> None:
     args = parse_args()
     case_dir = args.case_dir.resolve()
@@ -196,7 +318,7 @@ def main() -> None:
         failing = [v for v in report["rows"] if v["verdict"] != "pass"]
         emit({"promoted": False, "reason": "gate did not pass", "errors": report["errors"],
               "failing_rows": failing, "reverified": reverified, "spec_baseline": report["spec_baseline"],
-              "solver_deviations": report["solver_deviations"]}, 1)
+              "solver_deviations": report["solver_deviations"], "coupling": report["coupling"]}, 1)
     expected = report["candidate_sha256"]
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -216,14 +338,23 @@ def main() -> None:
         superseded = work / "superseded" / f"scene_final_{stamp}.blend"
         superseded.parent.mkdir(parents=True, exist_ok=True)
         os.replace(final, superseded)
+    portable = case_dir / PORTABLE_NAME
+    old_portable = None
+    if portable.exists():  # belongs to the scene being replaced; never deleted
+        old_portable = work / "superseded" / f"scene_final_portable_{stamp}.blend"
+        old_portable.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(portable, old_portable)
     os.replace(staging, final)
+    relative = final_relative_paths(case_dir, reverified)
+    portable_scene = portable_copy(case_dir, candidate, relative, stamp)
 
     reports = case_dir / "reports"
     reports.mkdir(exist_ok=True)
     gate_report_path = reports / f"gate_{stamp}.json"
     report["promoted_to"] = FINAL_NAME
     report["reverified"] = reverified
-    report["final_relative_paths"] = final_relative_paths(case_dir, reverified)
+    report["final_relative_paths"] = relative
+    report["portable_scene"] = portable_scene
     report["superseded"] = run_verifier.rel(superseded, case_dir) if superseded else None
     run_verifier.write_json_atomic(gate_report_path, report)
     gate_report = run_verifier.rel(gate_report_path, case_dir)
@@ -245,8 +376,11 @@ def main() -> None:
         # Undo: restore the manifest and the previous final scene; keep the gate report as a diagnostic.
         manifest_path.write_text(old_manifest_text, encoding="utf-8")
         final.unlink()
+        portable.unlink(missing_ok=True)
         if superseded:
             os.replace(superseded, final)
+        if old_portable:
+            os.replace(old_portable, portable)
         emit({"promoted": False, "reason": "case layout fails after promotion; promotion undone",
               "layout": layout, "gate_report": gate_report}, 1)
 
@@ -254,7 +388,8 @@ def main() -> None:
           "sha256": expected, "gate_report": gate_report,
           "superseded": report["superseded"], "contract_changes": report["contract_changes"],
           "spec_baseline": report["spec_baseline"], "solver_deviations": report["solver_deviations"],
-          "final_relative_paths": report["final_relative_paths"]}, 0)
+          "coupling": report["coupling"], "final_relative_paths": report["final_relative_paths"],
+          "portable_scene": report["portable_scene"]}, 0)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,14 @@
     check = penetration(...)
     verifier.write_result(args.out, [check])
 
+A helper that needs a solver cache raises a CacheMissing subclass when the cache is not there
+(gas.GasCacheMissing, liquid.LiquidCacheMissing). Catch it and record the row as failed:
+
+    try:
+        checks = [gas.density(...)]
+    except verifier.CacheMissing as exc:
+        checks = [verifier.cache_missing_check("gas_cache", exc)]
+
 Pure Python (no bpy), so it is testable outside Blender.
 """
 
@@ -42,6 +50,22 @@ class Check:
             raise ValueError(f"check {self.name!r} passed with a first_failure")
         if not self.passed and not self.first_failure:
             raise ValueError(f"check {self.name!r} failed without a first_failure")
+
+
+class CacheMissing(RuntimeError):
+    """A solver cache a helper needs is not there: not baked, wrong range, or its files are missing."""
+
+
+def cache_missing_check(name: str, exc: CacheMissing, **context) -> Check:
+    """A failed Check recording the missing cache.
+
+    measurements {"cache_missing": True, "error": str(exc), **context}; first_failure
+    {"reason": "cache missing", "error": str(exc), **context}, so the row is `fail`, not a crash.
+    """
+    if not isinstance(exc, CacheMissing):
+        raise TypeError(f"expected a CacheMissing, got {type(exc).__name__}")
+    measurements = {"cache_missing": True, "error": str(exc), **context}
+    return Check(name, False, measurements, {"reason": "cache missing", "error": str(exc), **context})
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -1,0 +1,191 @@
+{
+  "description": "What one Blender system can pass to another [skills/scene-simulation/references/material-playbooks.en.md section 7]. Each entry: a channel, the systems (schemas/solver_classes.json `systems` names) or input kinds that can drive it (`from`) and be driven (`to`), or \"any\"; the interaction kinds it provides; whether it is an approximation (the edge must then say what it approximates); `order` driver_first when the driven solver reads the driver's baked output, so the driver is baked first; the Blender settings that carry it; and the evidence it works. bin/spec_audit.py checks every topology.solver_graph edge against this table; worldagent_measure.coupling finds the same channels in the built scene. Pairs with no entry: FLIP Fluids drives nothing (it reads Bullet, Cloth and Soft Body only as obstacles and passes no fluid state back); Bullet is driven only through force fields, the Fluid Flow field and keyed input (a rigid body world reads its collection, constraints, effector weights and point cache); two solvers never drive each other both ways, because one is always baked before the other (`no_channel` lists these). A coupling not listed is either a scripted_transfer (an approximation with method and assumptions) or a claim marked achievable: false.",
+  "kinds": ["translate", "rotate", "deform", "displace", "trigger"],
+  "inputs": ["keyed", "force_field"],
+  "no_channel": [
+    "flip_fluids -> any system: FLIP Fluids 1.8.8 writes its own caches only; no Blender system reads its fluid state",
+    "any system -> bullet_rigid_body, except force_field, field_flow and kinematic_boundary: a rigid body world reads only its collection, constraints, effector_weights and point_cache",
+    "two-way between two solvers: one is baked before the other, so the earlier one cannot read the later one's result; list the reaction in omitted_reactions"
+  ],
+  "channels": [
+    {
+      "channel": "effector",
+      "from": ["bullet_rigid_body"],
+      "to": ["mantaflow_liquid", "mantaflow_gas"],
+      "provides": ["displace"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "Fluid modifier of type EFFECTOR on the body, effector_settings.use_effector, effector_type COLLISION or GUIDE; the body is in the domain's domain_settings.effector_group (None: every effector)",
+      "evidence": [
+        {"kind": "source", "ref": "Blender RNA FluidEffectorSettings.use_effector, effector_type; FluidDomainSettings.effector_group"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_effector_link"}
+      ]
+    },
+    {
+      "channel": "flow_source",
+      "from": ["bullet_rigid_body"],
+      "to": ["mantaflow_liquid", "mantaflow_gas"],
+      "provides": ["displace", "trigger"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "Fluid modifier of type FLOW on the body, flow_settings.use_inflow (and use_initial_velocity for a moving source); the body is in the domain's domain_settings.fluid_group (None: every flow)",
+      "evidence": [
+        {"kind": "source", "ref": "Blender RNA FluidFlowSettings.use_inflow, use_initial_velocity; FluidDomainSettings.fluid_group"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_flow_source_link"}
+      ]
+    },
+    {
+      "channel": "obstacle",
+      "from": ["bullet_rigid_body"],
+      "to": ["flip_fluids"],
+      "provides": ["displace"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "flip_fluid.object_type TYPE_OBSTACLE on the body with flip_fluid.obstacle.export_animated_mesh True; without it FLIP exports a body that has no keyframes as a STATIC mesh at its first pose",
+      "evidence": [
+        {"kind": "source", "ref": "FLIP Fluids 1.8.8 properties/obstacle_properties.py export_animated_mesh; objects/flip_fluid_geometry_export_object.py _initialize_motion_export_type"},
+        {"kind": "test", "ref": "tests/test_measure_coupling_flip.py (needs the FLIP Fluids add-on)"}
+      ]
+    },
+    {
+      "channel": "collision",
+      "from": ["bullet_rigid_body"],
+      "to": ["cloth", "soft_body"],
+      "provides": ["deform"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "Collision modifier on the body (collision.use); the body is in the cloth's collision_settings.collection or the soft body's settings.collision_collection (None: every collider)",
+      "evidence": [
+        {"kind": "source", "ref": "Blender RNA CollisionSettings.use; ClothCollisionSettings.collection; SoftBodySettings.collision_collection"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_collision_link"}
+      ]
+    },
+    {
+      "channel": "hook",
+      "from": ["bullet_rigid_body"],
+      "to": ["cloth", "soft_body"],
+      "provides": ["deform", "translate"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "Hook modifier on the cloth or soft body object whose object is the body, above the Cloth or Soft Body modifier",
+      "evidence": [
+        {"kind": "doc", "ref": "skills/scene-simulation/references/simulation-workflow.en.md 'Rigid Body -> Hook -> Cloth'"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_hook_link"}
+      ]
+    },
+    {
+      "channel": "kinematic_boundary",
+      "from": ["keyed"],
+      "to": ["any"],
+      "provides": ["translate", "rotate", "deform", "displace", "trigger"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "Keyed or driven transform, Armature, rigid_body.kinematic, or a keyed rigid body constraint value (motor, enabled, breaking threshold, spring) on a declared input object",
+      "evidence": [
+        {"kind": "doc", "ref": "skills/scene-simulation/references/simulation-workflow.en.md boundary/input table (kinematic collider, motor enable)"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_keyed_motor"}
+      ]
+    },
+    {
+      "channel": "force_field",
+      "from": ["force_field"],
+      "to": ["bullet_rigid_body"],
+      "provides": ["translate"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "Force field object (field.type); scene.rigidbody_world.effector_weights (collection, all, and the weight of the field's type). Bullet applies a field as a force at the centre of mass: no torque",
+      "evidence": [
+        {"kind": "source", "ref": "Blender RNA RigidBodyWorld.effector_weights"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_force_field_moves_rigid_body"}
+      ]
+    },
+    {
+      "channel": "force_field",
+      "from": ["force_field"],
+      "to": ["cloth", "soft_body"],
+      "provides": ["deform"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "Force field object; the target's effector_weights (ClothSettings, SoftBodySettings)",
+      "evidence": [
+        {"kind": "source", "ref": "Blender RNA ClothSettings.effector_weights, SoftBodySettings.effector_weights"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_force_field_link"}
+      ]
+    },
+    {
+      "channel": "force_field",
+      "from": ["force_field"],
+      "to": ["newton_particles", "sph_particles"],
+      "provides": ["translate"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "Force field object; the particle settings' effector_weights",
+      "evidence": [
+        {"kind": "source", "ref": "Blender RNA ParticleSettings.effector_weights"}
+      ]
+    },
+    {
+      "channel": "force_field",
+      "from": ["force_field"],
+      "to": ["mantaflow_liquid", "mantaflow_gas"],
+      "provides": ["displace"],
+      "approximation": false,
+      "order": "driver_first",
+      "blender": "Force field object; the domain's domain_settings.effector_weights",
+      "evidence": [
+        {"kind": "source", "ref": "Blender RNA FluidDomainSettings.effector_weights"}
+      ]
+    },
+    {
+      "channel": "field_flow",
+      "from": ["mantaflow_liquid", "mantaflow_gas"],
+      "to": ["bullet_rigid_body"],
+      "provides": ["translate"],
+      "approximation": true,
+      "order": "driver_first",
+      "blender": "Force field of type FLUID_FLOW whose field.source_object is the Mantaflow domain, strength field.flow; scene.rigidbody_world.effector_weights.smokeflow > 0. It pushes the body with the baked grid velocity at its centre: no torque, no buoyancy, no reaction on the fluid",
+      "evidence": [
+        {"kind": "source", "ref": "Blender RNA FieldSettings.source_object, flow; EffectorWeights.smokeflow"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_field_flow_translates_without_torque"}
+      ]
+    },
+    {
+      "channel": "field_flow",
+      "from": ["mantaflow_liquid", "mantaflow_gas"],
+      "to": ["cloth"],
+      "provides": ["deform"],
+      "approximation": true,
+      "order": "driver_first",
+      "blender": "As field_flow to Bullet, with the cloth's settings.effector_weights.smokeflow > 0",
+      "evidence": [
+        {"kind": "source", "ref": "Blender RNA ClothSettings.effector_weights.smokeflow"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_field_flow_deforms_cloth"}
+      ]
+    },
+    {
+      "channel": "event_timing",
+      "from": ["any"],
+      "to": ["any"],
+      "provides": ["trigger"],
+      "approximation": false,
+      "order": "none",
+      "blender": "A keyed switch both nodes share: emission frame, rigid_body.enabled or kinematic key, constraint enabled. No state passes between the solvers",
+      "evidence": [
+        {"kind": "doc", "ref": "skills/scene-simulation/references/material-playbooks.en.md section 7 'share event timing ... do not call this two-way coupling'"}
+      ]
+    },
+    {
+      "channel": "scripted_transfer",
+      "from": ["any"],
+      "to": ["any"],
+      "provides": ["translate", "rotate", "deform", "displace"],
+      "approximation": true,
+      "order": "driver_first",
+      "blender": "A case script reads the driver's baked output and writes a declared input of the driven solver (motor target or impulse, field strength, kinematic pose); the objects it writes are the edge's via",
+      "evidence": [
+        {"kind": "doc", "ref": "skills/scene-simulation/references/simulation-workflow.en.md boundary/input table ('Allowed when disclosed')"},
+        {"kind": "test", "ref": "tests/test_measure_coupling.py test_keyed_motor"}
+      ]
+    }
+  ]
+}

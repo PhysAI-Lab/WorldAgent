@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: only bin/promote.py may write a case's scene_final.blend.
+"""PreToolUse hook: only bin/promote.py may write a case's scene_final.blend (or scene_final_portable.blend).
 
 Blocks (exit 2, reason on stderr):
 - Write/Edit/MultiEdit/NotebookEdit whose target file is named scene_final.blend;
@@ -25,11 +25,14 @@ import sys
 from pathlib import PurePath
 
 FINAL = "scene_final.blend"
+# Both files promote writes; the portable copy is the final scene with cache paths resolved from the case root.
+FINALS = (FINAL, "scene_final_portable.blend")
+FINAL_RE = re.compile(r"scene_final(?:_portable)?\.blend")
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 DEST_LAST = {"cp", "rsync", "install", "ln"}
 ANY_ARG = {"mv", "rm", "unlink", "touch", "truncate", "tee"}
 SEPARATORS = {"&&", "||", ";", "|", "&", ";;", "|&", "(", ")"}
-REDIRECT = re.compile(r">>?\s*['\"]?[^\s'\";|&]*" + re.escape(FINAL))
+REDIRECT = re.compile(r">>?\s*['\"]?[^\s'\";|&]*" + FINAL_RE.pattern)
 # Python calls whose destination is their last argument (or dst=/filepath=).
 PY_DEST_CALLS = re.compile(r"\b(copyfile|copy2?|copytree|move|rename|replace|link|symlink|save_as_mainfile|"
                            r"save_mainfile)\s*\(")
@@ -45,7 +48,7 @@ def deny(reason: str) -> None:
 
 
 def names_final(arg: str) -> bool:
-    return PurePath(arg.split("=", 1)[-1]).name == FINAL
+    return PurePath(arg.split("=", 1)[-1]).name in FINALS
 
 
 def call_args(text: str, open_paren: int) -> list[str]:
@@ -75,13 +78,13 @@ def python_writes_final(text: str) -> bool:
         keyed = [a for a in args if re.match(r"(dst|filepath)\s*=", a)]
         positional = [a for a in args if not re.match(r"\w+\s*=", a)]
         dest = keyed[-1] if keyed else (positional[-1] if positional else "")
-        if FINAL in dest:
+        if FINAL_RE.search(dest):
             return True
     for m in PY_RECEIVER_CALLS.finditer(text):
         line_start = text.rfind("\n", 0, m.start()) + 1
-        if FINAL in text[line_start:m.start()]:
+        if FINAL_RE.search(text[line_start:m.start()]):
             return True
-    return FINAL in text and bool(PY_RESAVE.search(text))
+    return bool(FINAL_RE.search(text)) and bool(PY_RESAVE.search(text))
 
 
 def segments(command: str) -> list[list[str]]:
@@ -165,7 +168,7 @@ def write_reason(tool: str, tool_input: dict) -> str | None:
         entries = patch_input(tool_input) if tool == "apply_patch" else [file_input(tool_input)]
         for targets, text in entries:
             for target in targets:
-                if PurePath(target).name == FINAL:
+                if PurePath(target).name in FINALS:
                     return f"direct write to {target}."
             if python_writes_final(text):
                 if tool == "apply_patch":
@@ -173,7 +176,7 @@ def write_reason(tool: str, tool_input: dict) -> str | None:
                 return f"{targets[0]} contains code that writes {FINAL}."
     elif tool == "Bash":
         command = tool_input.get("command")
-        if isinstance(command, str) and FINAL in command and shell_writes_final(command):
+        if isinstance(command, str) and FINAL_RE.search(command) and shell_writes_final(command):
             return "this command would write the final scene."
     return None
 

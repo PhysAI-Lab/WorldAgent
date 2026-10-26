@@ -20,6 +20,8 @@ SPEC.loader.exec_module(spec_audit)
 VALID = json.loads((ROOT / "tests" / "fixtures" / "specs" / "valid_warehouse_shelf.json").read_text(encoding="utf-8"))
 ROWS = json.loads((ROOT / "tests" / "fixtures" / "requirements" / "valid_matrix.json").read_text(encoding="utf-8"))
 AUDIT = ROOT / "bin" / "spec_audit.py"
+JELLY_GRAPH = json.loads((ROOT / "tests" / "fixtures" / "specs" / "valid_justified_solver_deviation.json")
+                         .read_text(encoding="utf-8"))["topology"]["solver_graph"]
 
 
 def beat(m, beat_id):
@@ -54,6 +56,21 @@ class SpecAuditTest(AuditCase):
         # tip: 49-96 is 2.0 s at 24 fps
         self.assertIn("readable_duration", self.checks(lambda m: beat(m, "tip").__setitem__("minimum_readable_seconds", 5)))
 
+    def test_total_duration(self):
+        # frame_range 1-240 is 10 s at 24 fps
+        story = lambda **f: (lambda m: m["contract"]["story"].update(f))  # noqa: E731
+        self.assertEqual({"duration"}, self.checks(story(minimum_duration_seconds=60)))
+        self.assertEqual(set(), self.checks(story(minimum_duration_seconds=10)))
+
+    def test_long_form_floor_only_without_requested_duration(self):
+        story = lambda **f: (lambda m: m["contract"]["story"].update(f))  # noqa: E731
+        self.assertEqual({"duration"}, self.checks(story(long_form=True)))
+        self.assertEqual(set(), self.checks(story(long_form=True, requested_duration_seconds=8)))
+        self.assertEqual(set(), self.checks(story(long_form=False)))
+
+    def test_free_fall_object_has_no_support(self):
+        self.assertEqual(set(), self.checks(lambda m: obj(m, "crate_a").pop("initial_support", None)))
+
     def test_unknown_dependency(self):
         self.assertIn("dependency", self.checks(lambda m: beat(m, "fall").__setitem__("depends_on", ["flood"])))
 
@@ -81,9 +98,10 @@ class SpecAuditTest(AuditCase):
 
 class SolverChoiceTest(AuditCase):
     def jelly(self, m, **fields):
-        """crate_a as the jelly runs had it: an elastic body simulated by Cloth."""
+        """crate_a as the jelly runs had it: an elastic body simulated by Cloth (two systems, so with a solver graph)."""
         obj(m, "crate_a").update(simulation_class="soft_body", blender_system="cloth", **fields)
         m["contract"]["simulation_class"] = ["rigid_body", "soft_body"]
+        m["topology"]["solver_graph"] = copy.deepcopy(JELLY_GRAPH)
 
     def test_missing_fields(self):
         self.assertIn("solver_choice", self.checks(lambda m: obj(m, "crate_a").pop("blender_system")))
@@ -108,6 +126,17 @@ class SolverChoiceTest(AuditCase):
     def test_fixed_and_kinematic_need_no_reason(self):
         self.assertEqual(set(), self.checks(lambda m: obj(m, "floor").__setitem__("blender_system", "bullet_rigid_body")))
 
+    def test_role_only_emitter_is_fixed_next_to_gas_domain(self):
+        """A Fluid Flow emitter only carries a role: fixed / none, while the domain it feeds is gas / mantaflow_gas."""
+        def smoke_case(m):
+            obj(m, "crate_a").update(role="smoke_domain", simulation_class="gas", blender_system="mantaflow_gas")
+            obj(m, "crate_b").update(role="smoke_emitter_disc", simulation_class="fixed", blender_system="none")
+            m["contract"]["simulation_class"] = ["gas"]
+        m = copy.deepcopy(VALID)
+        smoke_case(m)
+        self.assertEqual([], spec_audit.audit(m))  # one simulating system, so no solver graph either
+        self.assertEqual([], spec_audit.solver_deviations(m))
+
     def test_case_class_mismatch(self):
         def cloth_case(m):
             self.jelly(m, solver_choice_reason={"reason": "r", "evidence": ["reports/p.json"]})
@@ -117,7 +146,8 @@ class SolverChoiceTest(AuditCase):
             lambda m: m["contract"].__setitem__("simulation_class", ["rigid_body", "gas"])))
 
     def test_coupled_needs_no_object(self):
-        self.assertEqual(set(), self.checks(
+        # coupled is a case class no object has; it does need a solver graph (tests/test_coupling_graph.py)
+        self.assertEqual({"solver_graph_required"}, self.checks(
             lambda m: m["contract"].__setitem__("simulation_class", ["coupled", "rigid_body"])))
 
     def test_deviations_listed(self):
@@ -206,6 +236,59 @@ class RequirementRowTest(AuditCase):
         self.assertEqual(set(), self.checks(lambda rows: self.tol(rows, solver_m=0.015, value_m=0.015, basis="solver")))
         self.assertEqual(set(), self.checks(lambda rows: self.tol(rows, value_m=0.00305)))  # rounding
         self.assertEqual({"tolerance_basis"}, self.checks(lambda rows: self.tol(rows, value_m=0.05)))  # looser
+
+    def test_outcome_threshold(self):
+        outcome = {"quantity": "crate_a centre height above the floor", "basis": "outcome", "ratio": 0.45,
+                   "of": "crate_a start height", "derivation": "request: 'the crates fall off the shelf'"}
+        self.assertEqual(set(), self.checks(lambda rows: rows[1].__setitem__("tolerances", [outcome])))
+        absolute = dict(outcome, value_m=0.1, screen_m=0.003, solver_m=0.001)
+        for key in ("ratio", "of"):
+            absolute.pop(key)
+        self.assertEqual(set(), self.checks(lambda rows: rows[1].__setitem__("tolerances", [absolute])))
+        self.assertEqual({"tolerance_basis"}, self.checks(
+            lambda rows: rows[1].__setitem__("tolerances", [dict(absolute, derivation="")])))
+
+    def test_outcome_length_not_tighter_than_default(self):
+        # A floor gap of 0.1 mm called an outcome while 5 px is 3 mm: the outcome cannot tighten.
+        gap = {"quantity": "bead gap above the floor", "basis": "outcome", "value_m": 1e-4,
+               "screen_m": 0.003, "solver_m": 0.001, "derivation": "request: 'the beads come to rest'"}
+        set_gap = lambda tol: (lambda rows: rows[1].__setitem__("tolerances", [tol]))
+        problems = spec_audit.tolerance_problems(gap)
+        self.assertEqual(1, len(problems))
+        self.assertIn("tighter than max(screen_m, solver_m)", problems[0])
+        self.assertEqual({"tolerance_basis"}, self.checks(set_gap(gap)))
+        # Without screen_m and solver_m the audit cannot compare, so both are required.
+        bare = {k: v for k, v in gap.items() if k not in ("screen_m", "solver_m")}
+        self.assertIn("without screen_m and solver_m", spec_audit.tolerance_problems(bare)[0])
+        self.assertEqual({"tolerance_basis"}, self.checks(set_gap(bare)))
+        # Equal within rounding, or looser, passes; a tighter value needs basis request.
+        self.assertEqual(set(), self.checks(set_gap(dict(gap, value_m=0.00290))))
+        self.assertEqual(set(), self.checks(set_gap(dict(gap, value_m=0.05))))
+        self.assertEqual(set(), self.checks(set_gap(dict(gap, basis="request",
+                                                         derivation="request: 'within a tenth of a millimetre'"))))
+        # A ratio outcome is not compared with the default rule.
+        ratio = {"quantity": "ball top height", "basis": "outcome", "ratio": 0.5, "of": "ball start height",
+                 "derivation": "request: 'bounces to below half its height'"}
+        self.assertEqual([], spec_audit.tolerance_problems(ratio))
+
+    def test_screen_footprint_at_reference_resolution(self):
+        low = "5 px at 320x180 from the camera at 1.2 m = 13.5 mm; Bullet margin 1 mm"
+        self.assertEqual({"tolerance_basis"}, self.checks(lambda rows: self.tol(rows, derivation=low)))
+        scaled = "final 320x180 scaled to 1920x1080: 5 px at 1.6 m = 3.0 mm; Bullet margin 1 mm"
+        self.assertEqual(set(), self.checks(lambda rows: self.tol(rows, derivation=scaled)))
+        portrait = "5 px at 1080x1920 at 1.6 m = 3.0 mm; Bullet margin 1 mm"
+        self.assertEqual(set(), self.checks(lambda rows: self.tol(rows, derivation=portrait)))
+
+    def test_beat_coverage(self):
+        self.assertEqual({"beat_coverage"}, self.checks(lambda rows: rows[2].pop("covers")))
+        self.assertEqual({"beat_coverage"}, self.checks(lambda rows: rows[2]["covers"].append("flood")))
+        self.assertEqual({"malformed"}, self.checks(lambda rows: rows[2].__setitem__("covers", "tip")) - {"beat_coverage"})
+
+    def test_coverage_shared_with_gate(self):
+        gate = importlib.util.spec_from_file_location("gate", ROOT / "bin" / "gate.py")
+        module = importlib.util.module_from_spec(gate)
+        gate.loader.exec_module(module)
+        self.assertIs(module.story_coverage, module.spec_audit.story_coverage)
 
     def test_basis_needs_its_component(self):
         self.assertEqual({"tolerance_basis"}, self.checks(lambda rows: self.tol(rows, screen_m=None)))

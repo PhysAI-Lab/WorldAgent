@@ -3,6 +3,7 @@
 No Blender: promote re-verification uses tests/fixtures/gate/fake_blender.py. Run from the repo root:
     python3 -m unittest worldagent-plugin/tests/test_trace.py
 """
+import copy
 import importlib.util
 import json
 import os
@@ -62,6 +63,25 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(["aftermath"], change["diff"]["beats"]["added"])
         self.assertEqual(["crate_b"], change["diff"]["objects"]["removed"])
         self.assertIn("fps", change["diff"]["contract_fields"])
+
+    def test_implementation_fields_listed_apart(self):
+        old = gc.read_manifest(self.case)
+        new = copy.deepcopy(old)
+        obj, beat = new["object_contracts"][0], new["contract"]["story"]["beats"][0]
+        obj.update(solver_owner="motor constraint", allowed_inputs=["motor"], solver_owned_outputs=["pose"])
+        beat["owner"] = "Bullet with a motor constraint"
+        part = lambda m: case_trace.spec_part(m)  # noqa: E731
+        diff = case_trace.spec_diff(part(old), part(new))
+        self.assertEqual({"implementation"}, set(diff))
+        self.assertEqual({obj["name"]: ["solver_owner", "allowed_inputs", "solver_owned_outputs"]},
+                         diff["implementation"]["objects"])
+        self.assertEqual({beat["id"]: ["owner"]}, diff["implementation"]["beats"])
+        # A requirement change next to it is still listed as changed.
+        beat["frame_interval"] = [beat["frame_interval"][0] + 1, beat["frame_interval"][1] + 1]
+        diff = case_trace.spec_diff(part(old), part(new))
+        self.assertEqual([beat["id"]], diff["beats"]["changed"])
+        self.assertNotIn("objects", diff)
+        self.assertIn("beats", diff["implementation"])
 
     def test_note_and_show(self):
         proc = self.run_tool(TRACE, "note", self.case, "--hypothesis", "box sinks because collision margin is 0",

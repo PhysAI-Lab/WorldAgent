@@ -247,7 +247,11 @@ def main() -> None:
         cmd = [blender, "--background", "--factory-startup", str(candidate), "--python-exit-code", "1",
                "--python-expr", lib_expr, "--python-expr", JOB, "--", "--result", str(result_path), *job_args]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout, cwd=case_dir)
+            # Blender writes side files into its working folder (Mantaflow's waveletNoiseTile.bin, the FLIP
+            # add-on's icons/); keep them under .work/ so the case layout stays valid.
+            work_cwd = case_dir / ".work" / "blender"
+            work_cwd.mkdir(parents=True, exist_ok=True)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout, cwd=work_cwd)
         except subprocess.TimeoutExpired:
             problem = f"render timed out after {args.timeout:g} s"
         if problem is None:

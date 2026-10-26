@@ -4,6 +4,9 @@
       "id": "crate_geometry",
       "text": "Crates and shelf have real geometry and support",
       "category": "target_asset_realism",
+      "covers": [
+        "establish"
+      ],
       "pass_predicate": "Static audit reports zero penetration and zero unsupported objects",
       "tolerances": [
         {
@@ -74,6 +77,10 @@
       "id": "fall",
       "text": "Both crates fall after the shelf tips",
       "category": "story_time",
+      "covers": [
+        "tip",
+        "fall"
+      ],
       "pass_predicate": "crates leave the shelf after frame 97",
       "measures": [
         {

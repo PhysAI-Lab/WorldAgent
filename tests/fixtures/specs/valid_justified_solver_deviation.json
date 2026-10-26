@@ -254,6 +254,68 @@
     "support": "floor slab -> shelf -> crates",
     "coupling": [
       "keyed shelf rotation -> Bullet crates"
-    ]
+    ],
+    "solver_graph": {
+      "nodes": [
+        {
+          "id": "shelf_input",
+          "input": "keyed",
+          "objects": [
+            "shelf"
+          ]
+        },
+        {
+          "id": "rigid",
+          "objects": [
+            "crate_b"
+          ],
+          "cache": "in .blend"
+        },
+        {
+          "id": "cloth",
+          "objects": [
+            "crate_a"
+          ],
+          "cache": "in .blend"
+        }
+      ],
+      "edges": [
+        {
+          "id": "shelf_to_rigid",
+          "from": "shelf_input",
+          "to": "rigid",
+          "channel": "kinematic_boundary",
+          "objects": [
+            "shelf"
+          ],
+          "exchanged": [
+            "shelf pose per frame"
+          ],
+          "omitted_reactions": [
+            "none: the shelf is a declared keyed input"
+          ]
+        },
+        {
+          "id": "shelf_to_cloth",
+          "from": "shelf_input",
+          "to": "cloth",
+          "channel": "kinematic_boundary",
+          "objects": [
+            "shelf"
+          ],
+          "exchanged": [
+            "shelf pose per frame (Collision modifier)"
+          ],
+          "omitted_reactions": [
+            "none: the shelf is a declared keyed input"
+          ]
+        }
+      ],
+      "bake_order": [
+        "shelf_input",
+        "rigid",
+        "cloth"
+      ]
+    }
   }
 }

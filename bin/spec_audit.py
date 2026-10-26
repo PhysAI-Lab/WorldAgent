@@ -6,9 +6,13 @@ Checks the cross-references a JSON schema cannot express [paper A.1.1
 
 - beat ids are unique, intervals are ordered and inside the contract frame range
 - each beat lasts at least its minimum readable duration at the contract FPS
+- contract.frame_range lasts at least story.minimum_duration_seconds, and at least the 12 s
+  long-form minimum when story.long_form is true and the request states no duration
+  (story.requested_duration_seconds) [simulation-workflow.en.md 1.2]
 - depends_on names existing beats, has no cycles, and prerequisites start first
 - the beat count reaches required_beat_count
-- object names are unique and every initial_support resolves
+- object names are unique and every initial_support resolves (an object released in free
+  fall has none: the field is omitted)
 - topology region ids are unique and every edge joins existing regions
 - every object names its simulation_class and blender_system, and a system that is not
   preferred for the class (schemas/solver_classes.json) has a solver_choice_reason with a
@@ -16,17 +20,38 @@ Checks the cross-references a JSON schema cannot express [paper A.1.1
   contract.simulation_class agree
 - when the manifest has a requirements_matrix: every row names a measured quantity
   (tolerances or measures), and every distance, penetration, position or error
-  tolerance states its basis and derivation. Default rule: max(5 px at the final delivery
+  tolerance states its basis and derivation. Default rule: max(5 px at the reference
   resolution at that distance, the solver's resolution); smaller only on request; numeric
-  tolerances as a ratio of object size [implementation decision 2026-10-24]
+  tolerances as a ratio of object size; basis outcome for a threshold taken from an outcome
+  the request states, which may be looser than the default rule but not tighter (an outcome
+  value_m also gives screen_m and solver_m and is at least their max). The reference resolution is the final render
+  resolution scaled up, aspect kept, to a longer side of at least 1920 px; a screen
+  derivation that names only smaller resolutions is rejected
+- when the manifest has a requirements_matrix: every beat is covered by a row, and no row's
+  covers names an unknown beat (story_coverage, shared with the gate)
+- when objects are simulated by two or more Blender systems, or contract.simulation_class
+  lists coupled: topology.solver_graph exists (solver_graph_required); each solver node's
+  objects share one simulating blender_system and every simulated object is in exactly one
+  solver node, input nodes name kinematic contracts or allowed_inputs (solver_node); each
+  edge joins its nodes through a channel schemas/coupling_channels.json lists for their
+  systems (solver_edge); approximations, scripted transfers, omitted reactions and Fluid
+  Flow carriers are stated (coupling_disclosure); bake_order lists every node once, drivers
+  first, without cycles (bake_order); an object resting on another node's object has an edge
+  between the two nodes (coupling_support); every beat interaction is provided by an edge or
+  marked achievable: false with a reason (coupling_claim). coupling_summary() lists the
+  approximations, not-achievable claims and omitted reactions for review (report `coupling`;
+  the gate and promote show it); it never changes the verdict
 
 Shape is checked by schemas/world_spec.schema.json; this script only reports
 malformed parts it cannot read. Standard library only.
 
-The first time the audit passes on a case's manifest.json, the spec is frozen: a copy and
-its hash go to <case>/reports/spec_baseline.json and the case trace gets a `spec_frozen`
-event. Later runs never overwrite it. The gate and promote compare the current spec with
-it and list every change for review, whether or not any row was measured in between.
+The first time the audit passes on a case's manifest.json with a non-empty
+requirements_matrix (so every beat is covered), the spec is frozen: the spec part, its hash
+and each row's id, pass_predicate, tolerances and measures go to
+<case>/reports/spec_baseline.json and the case trace gets a `spec_frozen` event. A passing
+run without a matrix freezes nothing. Later runs never overwrite the baseline. The gate and
+promote compare the current spec and rows with it and list every change for review, whether
+or not any row was measured in between.
 
 Usage: spec_audit.py <manifest.json> [--out report.json]
 Exit: 0 pass, 1 audit errors, 2 unreadable manifest.
@@ -36,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -60,14 +86,31 @@ SYSTEMS = set(SOLVER_CLASSES["systems"])
 UNSIMULATED_CLASSES = {"fixed", "kinematic"}
 # Case-level only: each object of a coupled system keeps its own class.
 COUPLED = "coupled"
+# What one Blender system can pass to another [material-playbooks.en.md section 7].
+CHANNELS = json.loads((Path(__file__).resolve().parent.parent / "schemas" / "coupling_channels.json")
+                      .read_text(encoding="utf-8"))
+INPUT_KINDS = tuple(CHANNELS["inputs"])
+# Channels whose driven solver does not read the driver's output, so bake order does not matter.
+UNORDERED_CHANNELS = {c["channel"] for c in CHANNELS["channels"] if c["order"] == "none"}
+SCRIPTED_TRANSFER = "scripted_transfer"
+FIELD_FLOW = "field_flow"
+FLUID_SYSTEMS = {"flip_fluids", "mantaflow_liquid", "mantaflow_gas"}
 
-TOLERANCE_BASES = ("screen", "solver", "numeric", "request")
+TOLERANCE_BASES = ("screen", "solver", "numeric", "request", "outcome")
 COMPARISONS = {"<", "<=", ">", ">=", "==", "!=", "within"}
 # A measure in one of these units bounded from above (or equal) is a tolerance and needs a basis.
 LENGTH_UNITS = {"m", "cm", "mm", "um", "µm", "μm", "nm"}
 LOWER_BOUNDS = {">", ">="}
 # value_m may differ from max(screen_m, solver_m) by this much (rounding in the derivation).
 DEFAULT_RULE_SLACK = 0.05
+# screen_m is taken at the final resolution scaled up to at least this longer side, so a low
+# test resolution does not loosen tolerances.
+REFERENCE_LONG_SIDE_PX = 1920
+RESOLUTION = re.compile(r"\b(\d{2,5})\s*[x×]\s*(\d{2,5})\b")
+# Long-form floor when the request states no duration [simulation-workflow.en.md 1.2].
+LONG_FORM_MINIMUM_SECONDS = 12
+# Row fields frozen with the spec: what the row measures and its thresholds.
+FROZEN_ROW_KEYS = ("id", "pass_predicate", "tolerances", "measures")
 
 
 def parse_args() -> argparse.Namespace:
@@ -184,7 +227,367 @@ def tolerance_problems(tol) -> list[str]:
             if not default <= value <= default * (1 + DEFAULT_RULE_SLACK):
                 problems.append(f"value_m {value:g} is not max({', '.join(parts)}) = {default:g}; "
                                 "a different value needs basis request")
+    if basis == "outcome" and has_value:
+        # An outcome may loosen a length bound past the default rule, never tighten it.
+        missing = [k for k in ("screen_m", "solver_m") if not number(tol.get(k))]
+        if missing:
+            problems.append(f"basis outcome on a length without {' and '.join(missing)}; give both so the "
+                            "audit can check value_m against the default rule")
+        else:
+            default = max(tol["screen_m"], tol["solver_m"])
+            if value * (1 + DEFAULT_RULE_SLACK) < default:
+                problems.append(f"basis outcome value_m {value:g} is tighter than max(screen_m, solver_m) = "
+                                f"{default:g}; an outcome may be looser than the default rule, never tighter. "
+                                "A tighter value needs basis request")
+    if number(tol.get("screen_m")) and not blank(tol.get("derivation")):
+        sizes = [(int(w), int(h)) for w, h in RESOLUTION.findall(tol["derivation"])]
+        if sizes and max(max(size) for size in sizes) < REFERENCE_LONG_SIDE_PX:
+            named = ", ".join(f"{w}x{h}" for w, h in sizes)
+            problems.append(f"screen_m taken at {named}; take 5 px at the reference resolution, the final "
+                            f"resolution scaled up to a longer side of at least {REFERENCE_LONG_SIDE_PX} px")
     return problems
+
+
+def story_coverage(manifest: dict, rows: list) -> tuple[dict, list[str], list[dict], list[str]]:
+    """Return (coverage {beat: [row ids]}, missing_beats, unknown_covers, errors) for the story beats.
+
+    A row covers the beats in its `covers` list; a row without `covers` covers the beat whose
+    id equals its own id, if any. Used by audit() and by bin/gate.py.
+    """
+    contract = manifest.get("contract")
+    story = contract.get("story") if isinstance(contract, dict) else None
+    beats = story.get("beats") if isinstance(story, dict) else None
+    beat_ids = [b["id"] for b in beats or [] if isinstance(b, dict) and isinstance(b.get("id"), str)]
+    coverage: dict[str, list[str]] = {bid: [] for bid in beat_ids}
+    unknown: list[dict] = []
+    errors: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rid = row.get("id")
+        if "covers" not in row:
+            covers = [rid] if rid in coverage else []
+        elif isinstance(row["covers"], list) and all(isinstance(c, str) and c for c in row["covers"]):
+            covers = row["covers"]
+        else:
+            errors.append(f"row {rid!r} covers is not a list of beat ids")
+            continue
+        for bid in covers:
+            if bid in coverage:
+                if rid not in coverage[bid]:
+                    coverage[bid].append(rid)
+            else:
+                unknown.append({"row": rid, "beat": bid})
+    missing = [bid for bid, covering in coverage.items() if not covering]
+    if missing:
+        errors.append("story beats without a requirements_matrix row: " + ", ".join(missing))
+    if unknown:
+        errors.append("covers names beats that do not exist: "
+                      + ", ".join(f"{u['row']} -> {u['beat']}" for u in unknown))
+    return coverage, missing, unknown, errors
+
+
+def channel_entries(channel, driver: str | None, driven: str | None) -> list[dict]:
+    """Rows of schemas/coupling_channels.json for channel from driver to driven (system or input kind)."""
+    return [c for c in CHANNELS["channels"] if c["channel"] == channel
+            and (driver in c["from"] or "any" in c["from"]) and (driven in c["to"] or "any" in c["to"])]
+
+
+def channels_between(driver: str | None, driven: str | None) -> list[str]:
+    """Channel names the table lists from driver to driven, without the generic ones (any -> any)."""
+    return sorted({c["channel"] for c in CHANNELS["channels"] if c["from"] != ["any"]
+                   and (driver in c["from"] or "any" in c["from"]) and (driven in c["to"] or "any" in c["to"])})
+
+
+def _names(value) -> list[str]:
+    return [v for v in value if isinstance(v, str) and v] if isinstance(value, list) else []
+
+
+def _support_targets(obj: dict) -> list[str]:
+    support = obj.get("initial_support")
+    return [t.strip() for t in support.split(SUPPORT_SEPARATOR)] if isinstance(support, str) else []
+
+
+def has_field_strength(edge: dict) -> bool:
+    settings = edge.get("settings")
+    return isinstance(settings, dict) and any(
+        (k == "field.flow" or k.endswith(".field.flow")) and number(v) for k, v in settings.items())
+
+
+def solver_graph(manifest: dict, error=None) -> dict | None:
+    """Read topology.solver_graph and check it (error(check, path, message) per problem).
+
+    Returns None when the manifest has no graph; otherwise {"nodes": {id: node}, "edges": [edge],
+    "claims": [claim]} with each node's derived `system` (input kind for input nodes) and each
+    edge's and claim's table lookup, for coupling_summary() and the checks below.
+    """
+    error = error or (lambda check, path, message: None)
+    objects = [o for o in manifest.get("object_contracts") or [] if isinstance(o, dict)] \
+        if isinstance(manifest.get("object_contracts"), list) else []
+    contracts = {o["name"]: o for o in objects if isinstance(o.get("name"), str)}
+    index = {o["name"]: i for i, o in enumerate(manifest.get("object_contracts") or [])
+             if isinstance(o, dict) and isinstance(o.get("name"), str)}
+    contract = manifest.get("contract") if isinstance(manifest.get("contract"), dict) else {}
+    story = contract.get("story") if isinstance(contract.get("story"), dict) else {}
+    beats = story.get("beats") if isinstance(story.get("beats"), list) else []
+    case_classes = contract.get("simulation_class") if isinstance(contract.get("simulation_class"), list) else []
+    simulated = {name: o.get("blender_system") for name, o in contracts.items()
+                 if o.get("simulation_class") in PREFERRED_SYSTEMS and o.get("simulation_class") not in UNSIMULATED_CLASSES
+                 and o.get("blender_system") in SYSTEMS and o.get("blender_system") != "none"}
+    topology = manifest.get("topology") if isinstance(manifest.get("topology"), dict) else {}
+    graph = topology.get("solver_graph")
+    root = "topology.solver_graph"
+
+    # solver_graph_required
+    systems = sorted(set(simulated.values()))
+    if graph is None:
+        reasons = []
+        if len(systems) >= 2:
+            reasons.append(f"objects are simulated by {len(systems)} Blender systems ({', '.join(systems)})")
+        if COUPLED in case_classes:
+            reasons.append("contract.simulation_class lists coupled")
+        if reasons:
+            error("solver_graph_required", root, "; ".join(reasons) + "; write topology.solver_graph (one node "
+                  "per solver bake, one edge per one-way transfer, bake_order)")
+        return None
+    if not isinstance(graph, dict):
+        error("malformed", root, "not an object")
+        return None
+
+    inputs_listed = {name for owner in [*objects, *(b for b in beats if isinstance(b, dict))]
+                     for name in _names(owner.get("allowed_inputs"))}
+
+    # solver_node
+    nodes: dict[str, dict] = {}
+    for i, node in enumerate(graph.get("nodes") if isinstance(graph.get("nodes"), list) else []):
+        path = f"{root}.nodes[{i}]"
+        if not (isinstance(node, dict) and isinstance(node.get("id"), str) and node["id"]):
+            error("malformed", path, "node without a string id")
+            continue
+        nid = node["id"]
+        path = f"{path}({nid})"
+        if nid in nodes:
+            error("solver_node", path, f"duplicate node id {nid!r}")
+            continue
+        members = _names(node.get("objects"))
+        if not members:
+            error("solver_node", path, "objects is missing or empty")
+        kind = node.get("input")
+        info = {"id": nid, "input": kind, "objects": members, "system": None,
+                "domain": node.get("domain") if isinstance(node.get("domain"), str) else None, "path": path}
+        if kind is not None:
+            if kind not in INPUT_KINDS:
+                error("solver_node", path, f"unknown input {kind!r}; one of {', '.join(INPUT_KINDS)}")
+            else:
+                info["system"] = kind
+            for name in members:
+                c = contracts.get(name)
+                if not ((c and c.get("simulation_class") == "kinematic") or name in inputs_listed):
+                    error("solver_node", path, f"input {name!r} is not a kinematic object contract and is not "
+                          "listed in any allowed_inputs")
+        else:
+            found: dict[str, list[str]] = {}
+            for name in members:
+                c = contracts.get(name)
+                if c is None:
+                    error("solver_node", path, f"{name!r} is not in object_contracts")
+                elif name not in simulated:
+                    error("solver_node", path, "objects of one solver node must share one simulating blender_system; "
+                          f"{name} is {c.get('blender_system')}/{c.get('simulation_class')}")
+                else:
+                    found.setdefault(simulated[name], []).append(name)
+            if len(found) > 1:
+                error("solver_node", path, "objects of one solver node must share one simulating blender_system; "
+                      + "; ".join(f"{', '.join(n)} {'is' if len(n) == 1 else 'are'} {s}" for s, n in found.items()))
+            elif found:
+                info["system"] = next(iter(found))
+            if info["system"] in FLUID_SYSTEMS and not info["domain"] and len(members) > 1:
+                error("solver_node", path, "fluid node needs domain (the domain object's name) when objects are not "
+                      "the domain")
+        nodes[nid] = info
+
+    owner: dict[str, list[str]] = {}
+    for nid, info in nodes.items():
+        if info["input"] is None:
+            for name in info["objects"]:
+                owner.setdefault(name, [])
+                if nid not in owner[name]:
+                    owner[name].append(nid)
+    for name, system in simulated.items():
+        path = f"object_contracts[{index.get(name)}]({name})"
+        if not owner.get(name):
+            error("solver_node", path, f"{name} ({system}) is in no solver node")
+        elif len(owner[name]) > 1:
+            error("solver_node", path, f"{name} is owned by nodes {' and '.join(owner[name])}; one solver owns an "
+                  "output and bakes it once")
+    solver_of = {name: nids[0] for name, nids in owner.items() if len(nids) == 1}
+
+    def in_node(name, info) -> bool:
+        return name in info["objects"] or name == info["domain"]
+
+    # solver_edge, coupling_disclosure
+    edges: list[dict] = []
+    edge_ids: set[str] = set()
+    for i, edge in enumerate(graph.get("edges") if isinstance(graph.get("edges"), list) else []):
+        path = f"{root}.edges[{i}]"
+        if not (isinstance(edge, dict) and isinstance(edge.get("id"), str) and edge["id"]):
+            error("malformed", path, "edge without a string id")
+            continue
+        eid = edge["id"]
+        path = f"{path}({eid})"
+        if eid in edge_ids:
+            error("solver_edge", path, f"duplicate edge id {eid!r}")
+            continue
+        edge_ids.add(eid)
+        a, b, channel = edge.get("from"), edge.get("to"), edge.get("channel")
+        unknown = [end for end in (a, b) if end not in nodes]
+        for end in unknown:
+            error("solver_edge", path, f"unknown node {end!r}")
+        if unknown:
+            continue
+        if a == b:
+            error("solver_edge", path, "from and to are the same node")
+            continue
+        fa, fb = nodes[a], nodes[b]
+        for name in _names(edge.get("objects")):
+            if not in_node(name, fa):
+                error("solver_edge", path, f"{name!r} is not an object of node {a}")
+        for name in _names(edge.get("targets")):
+            if not in_node(name, fb):
+                error("solver_edge", path, f"{name!r} is not an object of node {b}")
+        entries = channel_entries(channel, fa["system"], fb["system"])
+        if fa["system"] and fb["system"] and not entries:
+            listed = channels_between(fa["system"], fb["system"])
+            error("solver_edge", path, f"Blender provides no {channel} from {fa['system']} to {fb['system']} "
+                  f"(schemas/coupling_channels.json; listed: {', '.join(listed) or 'none'}); use a listed channel, "
+                  "declare a scripted_transfer with method and assumptions, or mark the claims achievable: false")
+        approximated = any(e["approximation"] for e in entries)
+        if approximated and blank(edge.get("approximation")):
+            error("coupling_disclosure", path, f"{channel} is an approximation; state what it approximates and how "
+                  "in approximation")
+        if channel == SCRIPTED_TRANSFER and (blank(edge.get("method")) or not _names(edge.get("assumptions"))):
+            error("coupling_disclosure", path, "scripted_transfer needs method (script path and what it computes) "
+                  "and assumptions")
+        omitted = [r for r in _names(edge.get("omitted_reactions")) if r.strip()]
+        if fa["input"] is None and channel not in UNORDERED_CHANNELS and not omitted:
+            error("coupling_disclosure", path, f"list what {b} does not push back on {a} in omitted_reactions")
+        if channel == FIELD_FLOW and not (_names(edge.get("via")) and has_field_strength(edge)):
+            error("coupling_disclosure", path, "field_flow needs the Fluid Flow field object in via and its strength "
+                  "in settings (field.flow)")
+        edges.append({"id": eid, "from": a, "to": b, "channel": channel, "path": path,
+                      "provides": sorted({k for e in entries for k in e["provides"]}),
+                      "approximated": approximated, "targets": _names(edge.get("targets")),
+                      "driver_first": channel not in UNORDERED_CHANNELS, "input_driver": fa["input"] is not None,
+                      "approximation": edge.get("approximation"), "method": edge.get("method"),
+                      "assumptions": _names(edge.get("assumptions")), "omitted_reactions": omitted})
+
+    # solver_graph_required: a transfer between two solvers is a coupled case.
+    if COUPLED not in case_classes:
+        for e in edges:
+            if nodes[e["from"]]["input"] is None and nodes[e["to"]]["input"] is None:
+                error("solver_graph_required", e["path"], f"solver_graph couples {e['from']} and {e['to']}; add "
+                      "coupled to contract.simulation_class")
+                break
+
+    # bake_order
+    order = graph.get("bake_order")
+    position: dict[str, int] = {}
+    if isinstance(order, list):
+        listed = [n for n in order if isinstance(n, str)]
+        missing = [n for n in nodes if n not in listed]
+        extra = sorted({n for n in listed if n not in nodes})
+        repeated = sorted({n for n in listed if listed.count(n) > 1})
+        if missing or extra or repeated:
+            parts = [f"{label} {', '.join(names)}" for label, names in
+                     (("missing", missing), ("extra", extra), ("repeated", repeated)) if names]
+            error("bake_order", f"{root}.bake_order", "bake_order must list every node once: " + "; ".join(parts))
+        for n in listed:
+            position.setdefault(n, len(position))
+    else:
+        error("malformed", f"{root}.bake_order", "not a list of node ids")
+    for e in edges:
+        if e["driver_first"] and e["from"] in position and e["to"] in position \
+                and position[e["to"]] < position[e["from"]]:
+            error("bake_order", e["path"], f"{e['to']} is baked before its driver {e['from']} ({e['channel']} reads "
+                  "the driver's baked output)")
+    cycle = find_cycle({nid: [e["to"] for e in edges if e["from"] == nid and e["driver_first"]] for nid in nodes})
+    if cycle:
+        error("bake_order", f"{root}.edges", f"cycle {' -> '.join(cycle)}: solvers bake one after the other, so "
+              "two cannot drive each other; keep one direction and list the other in omitted_reactions")
+
+    # coupling_support
+    def joined(x, y) -> bool:
+        return any({e["from"], e["to"]} == {x, y} for e in edges)
+
+    for name, obj in contracts.items():
+        for target in _support_targets(obj):
+            na, nb = solver_of.get(name), solver_of.get(target)
+            if na and nb and na != nb and not joined(na, nb):
+                error("coupling_support", f"object_contracts[{index.get(name)}]({name}).initial_support",
+                      f"{name} ({simulated[name]}) rests on {target} ({simulated[target]}) with no edge between "
+                      f"their nodes {na} and {nb}")
+
+    # coupling_claim
+    claims: list[dict] = []
+    for i, beat in enumerate(beats):
+        if not isinstance(beat, dict) or not isinstance(beat.get("interactions"), list):
+            continue
+        for j, claim in enumerate(beat["interactions"]):
+            path = f"contract.story.beats[{i}]({beat.get('id')}).interactions[{j}]"
+            if not isinstance(claim, dict):
+                error("malformed", path, "not {cause, effect, kind}")
+                continue
+            cause, effect, kind = claim.get("cause"), claim.get("effect"), claim.get("kind")
+            if cause not in nodes:
+                error("coupling_claim", path, f"cause {cause!r} is not a node")
+                continue
+            target = solver_of.get(effect)
+            if target is None or target == cause:
+                error("coupling_claim", path, f"effect {effect!r} is in no node other than {cause}")
+                continue
+            reaching = [e for e in edges if e["from"] == cause and e["to"] == target
+                        and (not e["targets"] or effect in e["targets"] or nodes[target]["domain"] in e["targets"])]
+            providing = [e for e in reaching if kind in e["provides"]]
+            record = {"beat": beat.get("id"), "cause": cause, "effect": effect, "kind": kind,
+                      "edges": [e["id"] for e in providing],
+                      "approximated": bool(providing) and all(e["approximated"] for e in providing)}
+            if claim.get("achievable") is False:
+                record.update(achievable=False, reason=claim.get("reason"))
+                if blank(claim.get("reason")):
+                    error("coupling_claim", path, "achievable false needs a reason")
+                if providing:
+                    error("coupling_claim", path, f"{providing[0]['id']} provides {kind}; remove achievable: false")
+            elif not reaching:
+                listed = channels_between(nodes[cause]["system"], nodes[target]["system"])
+                error("coupling_claim", path, f"no edge from {cause} to {target}; Blender channels for "
+                      f"{nodes[cause]['system']} -> {nodes[target]['system']}: {', '.join(listed) or 'none'}")
+            elif not providing:
+                kinds = sorted({k for e in reaching for k in e["provides"]})
+                error("coupling_claim", path, f"{', '.join(e['id'] for e in reaching)} provide "
+                      f"{', '.join(kinds) or 'nothing'}; {kind} needs another edge or achievable: false with reason")
+            claims.append(record)
+    return {"nodes": nodes, "edges": edges, "claims": claims}
+
+
+def coupling_summary(manifest: dict) -> dict | None:
+    """Approximations, approximated and not-achievable claims, and omitted reactions of the graph, for review.
+
+    None when the manifest has no topology.solver_graph. Never changes a verdict.
+    """
+    graph = solver_graph(manifest)
+    if graph is None:
+        return None
+    return {
+        "approximations": [{"edge": e["id"], "channel": e["channel"], "from": e["from"], "to": e["to"],
+                            "approximation": e["approximation"], "method": e["method"],
+                            "assumptions": e["assumptions"]} for e in graph["edges"] if e["approximated"]],
+        "approximated_claims": [{k: c[k] for k in ("beat", "cause", "effect", "kind", "edges")}
+                                for c in graph["claims"] if c.get("achievable") is not False and c["approximated"]],
+        "not_achievable": [{k: c[k] for k in ("beat", "cause", "effect", "kind", "reason")}
+                           for c in graph["claims"] if c.get("achievable") is False],
+        "omitted_reactions": [{"edge": e["id"], "from": e["from"], "to": e["to"], "omitted": e["omitted_reactions"]}
+                              for e in graph["edges"] if e["omitted_reactions"] and not e["input_driver"]],
+    }
 
 
 def audit(manifest: dict) -> list[dict]:
@@ -266,6 +669,22 @@ def audit(manifest: dict) -> list[dict]:
     cycle = find_cycle({k: [d for d in v if d != k] for k, v in graph.items()})
     if cycle:
         error("dependency", "contract.story.beats", "cycle: " + " -> ".join(cycle))
+
+    # Total duration [simulation-workflow.en.md 1.2]: a duration the request states takes
+    # precedence over the long-form floor; minimum_duration_seconds always has to fit.
+    if fps and frame_range and frame_range[0] <= frame_range[1]:
+        seconds = (frame_range[1] - frame_range[0] + 1) / fps
+        minimum = story.get("minimum_duration_seconds")
+        if number(minimum) and seconds < minimum:
+            error("duration", "contract.story.minimum_duration_seconds",
+                  f"frame_range {list(frame_range)} is {seconds:.2f} s at {fps} fps "
+                  f"< minimum_duration_seconds {minimum}")
+        if (story.get("long_form") is True and not number(story.get("requested_duration_seconds"))
+                and seconds < LONG_FORM_MINIMUM_SECONDS):
+            error("duration", "contract.story.long_form",
+                  f"frame_range {list(frame_range)} is {seconds:.2f} s at {fps} fps < the "
+                  f"{LONG_FORM_MINIMUM_SECONDS} s long-form minimum; the request states no duration "
+                  "(requested_duration_seconds)")
 
     required = story.get("required_beat_count")
     if isinstance(required, int) and not isinstance(required, bool) and len(by_id) < required:
@@ -356,6 +775,9 @@ def audit(manifest: dict) -> list[dict]:
             if end not in region_ids:
                 error("topology", f"topology.edges[{i}]", f"unknown region {end!r}")
 
+    # Coupling graph [paper A.1.2; material-playbooks.en.md section 7].
+    solver_graph(manifest, error)
+
     # Requirements rows, once the matrix exists (the gate reports a missing one).
     rows = manifest.get("requirements_matrix")
     for i, row in enumerate(rows if isinstance(rows, list) else []):
@@ -376,7 +798,23 @@ def audit(manifest: dict) -> list[dict]:
             elif measure.get("unit") in LENGTH_UNITS and measure["comparison"] not in LOWER_BOUNDS:
                 error("tolerance_basis", f"{path}.measures[{j}]",
                       f"{measure['comparison']} {measure['value']} {measure['unit']} is a length tolerance; "
-                      "state it under tolerances with its basis")
+                      "state it under tolerances with its basis (basis outcome when the threshold comes "
+                      "from an outcome the request states)")
+    # Beat coverage [simulation-workflow.en.md 1.2 empty missing_beats], same rule as the gate.
+    if isinstance(rows, list) and rows:
+        beat_index = {b.get("id"): i for i, b in enumerate(beats) if isinstance(b, dict)}
+        _, missing, unknown, _ = story_coverage(manifest, rows)
+        for bid in missing:
+            error("beat_coverage", f"contract.story.beats[{beat_index.get(bid)}]({bid})",
+                  "no requirements_matrix row covers this beat; name it in a row's covers")
+        row_index = {r.get("id"): i for i, r in enumerate(rows) if isinstance(r, dict)}
+        for u in unknown:
+            error("beat_coverage", f"requirements_matrix[{row_index.get(u['row'])}]({u['row']}).covers",
+                  f"names beat {u['beat']!r}, which contract.story.beats does not have")
+        for i, row in enumerate(rows):
+            if isinstance(row, dict) and "covers" in row and not (
+                    isinstance(row["covers"], list) and all(isinstance(c, str) and c for c in row["covers"])):
+                error("malformed", f"requirements_matrix[{i}]({row.get('id')}).covers", "not a list of beat ids")
 
     return errors
 
@@ -399,19 +837,64 @@ def evidence_errors(manifest: dict, case_dir: Path) -> list[dict]:
     return errors
 
 
+def method_errors(manifest: dict, case_dir: Path) -> list[dict]:
+    """scripted_transfer methods whose script path is not an existing file inside the case."""
+    errors = []
+    topology = manifest.get("topology") if isinstance(manifest.get("topology"), dict) else {}
+    graph = topology.get("solver_graph") if isinstance(topology.get("solver_graph"), dict) else {}
+    for i, edge in enumerate(graph.get("edges") if isinstance(graph.get("edges"), list) else []):
+        if not (isinstance(edge, dict) and edge.get("channel") == SCRIPTED_TRANSFER) or blank(edge.get("method")):
+            continue
+        script = edge["method"].split(":", 1)[0].strip()
+        path = (case_dir / script).resolve()
+        if not path.is_relative_to(case_dir) or not path.is_file():
+            errors.append({"check": "coupling_disclosure",
+                           "path": f"topology.solver_graph.edges[{i}]({edge.get('id')}).method",
+                           "message": f"{script!r} is not an existing file inside the case; start method with the "
+                                      "case-relative script path"})
+    return errors
+
+
+def frozen_rows(manifest: dict) -> list[dict]:
+    """The part of each requirements row that is frozen with the spec."""
+    rows = manifest.get("requirements_matrix")
+    return [{k: row.get(k) for k in FROZEN_ROW_KEYS} for row in rows if isinstance(row, dict)] \
+        if isinstance(rows, list) else []
+
+
+def rows_diff(old: list, new: list) -> dict:
+    """Row ids added, removed, or with a changed pass_predicate, tolerances or measures."""
+    a = {r.get("id"): r for r in old if isinstance(r, dict)}
+    b = {r.get("id"): r for r in new if isinstance(r, dict)}
+    part = {"added": sorted(map(str, set(b) - set(a))), "removed": sorted(map(str, set(a) - set(b))),
+            "changed": sorted(str(k) for k in set(a) & set(b) if a[k] != b[k])}
+    return part if any(part.values()) else {}
+
+
 def freeze(case_dir: Path, manifest: dict) -> dict:
-    """Keep the first spec that passes the audit; return where it is and whether the current spec matches."""
+    """Keep the first passing spec with its rows; return where it is and whether the current spec matches.
+
+    Nothing is frozen while the manifest has no requirements_matrix rows.
+    """
     path = case_dir / BASELINE
     digest = case_trace.spec_hash(manifest)
     if path.is_file():
         try:
-            frozen = json.loads(path.read_text(encoding="utf-8")).get("spec_hash")
-        except (OSError, ValueError, AttributeError):
-            frozen = None
-        return {"path": BASELINE.as_posix(), "created": False, "matches": frozen == digest}
+            data = json.loads(path.read_text(encoding="utf-8"))
+            matches = data.get("spec_hash") == digest
+            if "rows" in data:  # baselines written before rows were frozen compare the spec part only
+                matches = matches and not rows_diff(data["rows"], frozen_rows(manifest))
+        except (OSError, ValueError, AttributeError, TypeError):
+            matches = False
+        return {"path": BASELINE.as_posix(), "created": False, "matches": matches}
+    rows = manifest.get("requirements_matrix")
+    if not (isinstance(rows, list) and rows):
+        return {"path": None, "created": False, "matches": None,
+                "problem": "not frozen: no requirements_matrix yet; the spec is frozen by the first "
+                           "passing audit with the matrix"}
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"spec_hash": digest, "frozen_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "spec": case_trace.spec_part(manifest)}
+            "spec": case_trace.spec_part(manifest), "rows": frozen_rows(manifest)}
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     case_trace.record(case_dir, {"type": "spec_frozen", "baseline": BASELINE.as_posix()}, manifest)
     return {"path": BASELINE.as_posix(), "created": True, "matches": True}
@@ -431,7 +914,9 @@ def main() -> None:
     errors = audit(manifest)
     if args.manifest.name == "manifest.json":
         errors += evidence_errors(manifest, args.manifest.resolve().parent)
-    report = {"pass": not errors, "manifest": str(args.manifest.resolve()), "errors": errors}
+        errors += method_errors(manifest, args.manifest.resolve().parent)
+    report = {"pass": not errors, "manifest": str(args.manifest.resolve()), "errors": errors,
+              "coupling": coupling_summary(manifest)}
     if report["pass"] and args.manifest.name == "manifest.json":
         report["spec_baseline"] = freeze(args.manifest.resolve().parent, manifest)
     text = json.dumps(report, indent=2, ensure_ascii=False)

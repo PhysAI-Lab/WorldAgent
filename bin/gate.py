@@ -38,11 +38,21 @@ pass_predicate, or world spec was changed after the row measured something other
 moving a beat's window is how a check gets weaker without any verdict being faked, so a
 person should look at each listed change before accepting the result.
 `spec_baseline` compares the world spec with the one frozen when the spec audit first
-passed (bin/spec_audit.py) and lists what changed since: object sizes, beats, inputs and
-topology changed before any row was measured show up here too. `solver_deviations` lists every
+passed with a requirements matrix (bin/spec_audit.py) and lists what changed since: object
+sizes, beats, inputs and topology changed before any row was measured show up here too, and
+`diff.rows` lists rows added, removed, or with a changed pass_predicate, tolerances or measures
+(baselines frozen before rows were kept compare the spec part only). Changes to how the scene is
+built (object solver_owner, allowed_inputs, solver_owned_outputs; beat owner) are listed apart under
+`diff.implementation`, and `requirements_changed` is false when nothing else changed; both are
+review only. `solver_deviations` lists every
 object simulated by a Blender system that is not preferred for its simulation_class
 (schemas/solver_classes.json), with the recorded solver_choice_reason, so a person can judge
-the reason; a deviation without a reason already fails the spec audit. `limited` reports whether
+the reason; a deviation without a reason already fails the spec audit. `coupling` lists, for a case
+with topology.solver_graph, the approximated couplings (approximation channels such as field_flow,
+and scripted transfers) and the beat interactions they alone provide, the interactions marked
+achievable: false, and the reactions each edge omits; every claim entry carries the rows that cover
+its beat with their verdicts, so a reader sees that an approximated claim passed only through its
+measured rows (bin/spec_audit.py coupling_summary; null without a graph). `limited` reports whether
 a `limited` case status was recorded by bin/limit.py (runner results on every non-render
 row) or written some other way.
 
@@ -151,39 +161,8 @@ def evidence_problem(row: dict, case_dir: Path) -> str | None:
     return None
 
 
-def story_coverage(manifest: dict, rows: list) -> tuple[dict, list[str], list[dict], list[str]]:
-    """Return (coverage {beat: [row ids]}, missing_beats, unknown_covers, errors) for the story beats."""
-    contract = manifest.get("contract")
-    story = contract.get("story") if isinstance(contract, dict) else None
-    beats = story.get("beats") if isinstance(story, dict) else None
-    beat_ids = [b["id"] for b in beats or [] if isinstance(b, dict) and isinstance(b.get("id"), str)]
-    coverage: dict[str, list[str]] = {bid: [] for bid in beat_ids}
-    unknown: list[dict] = []
-    errors: list[str] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        rid = row.get("id")
-        if "covers" not in row:
-            covers = [rid] if rid in coverage else []
-        elif isinstance(row["covers"], list) and all(isinstance(c, str) and c for c in row["covers"]):
-            covers = row["covers"]
-        else:
-            errors.append(f"row {rid!r} covers is not a list of beat ids")
-            continue
-        for bid in covers:
-            if bid in coverage:
-                if rid not in coverage[bid]:
-                    coverage[bid].append(rid)
-            else:
-                unknown.append({"row": rid, "beat": bid})
-    missing = [bid for bid, covering in coverage.items() if not covering]
-    if missing:
-        errors.append("story beats without a requirements_matrix row: " + ", ".join(missing))
-    if unknown:
-        errors.append("covers names beats that do not exist: "
-                      + ", ".join(f"{u['row']} -> {u['beat']}" for u in unknown))
-    return coverage, missing, unknown, errors
+# Beat coverage rule, shared with the spec audit.
+story_coverage = spec_audit.story_coverage
 
 
 def contract_changes(rows: list) -> list[dict]:
@@ -209,11 +188,31 @@ def spec_baseline(case_dir: Path, manifest: dict) -> dict:
         frozen, digest = data["spec"], data["spec_hash"]
     except (OSError, ValueError, KeyError, TypeError):
         return {"baseline": spec_audit.BASELINE.as_posix(), "changed": None, "problem": "frozen spec is unreadable"}
+    spec_changed = run_verifier.spec_hash(manifest) != digest
+    # Baselines written before rows were frozen have no "rows"; only their spec part is compared.
+    rows = spec_audit.rows_diff(data["rows"], spec_audit.frozen_rows(manifest)) \
+        if isinstance(data.get("rows"), list) else {}
     out = {"baseline": spec_audit.BASELINE.as_posix(), "frozen_utc": data.get("frozen_utc"),
-           "changed": run_verifier.spec_hash(manifest) != digest}
+           "changed": spec_changed or bool(rows)}
     if out["changed"]:
-        out["diff"] = case_trace.spec_diff(frozen, case_trace.spec_part(manifest)) or "changed"
+        diff = case_trace.spec_diff(frozen, case_trace.spec_part(manifest)) if spec_changed else {}
+        if rows:
+            diff["rows"] = rows
+        out["diff"] = diff or "changed"
+        # Only implementation fields (who drives an object or beat) changed: still listed for review.
+        out["requirements_changed"] = not diff or any(k != "implementation" for k in diff)
     return out
+
+
+def coupling_review(manifest: dict, coverage: dict, verdicts: list) -> dict | None:
+    """spec_audit.coupling_summary with the covering rows' verdicts on every claim, for review."""
+    summary = spec_audit.coupling_summary(manifest)
+    if summary is None:
+        return None
+    verdict = {v["row"]: v["verdict"] for v in verdicts}
+    for claim in summary["approximated_claims"] + summary["not_achievable"]:
+        claim["rows"] = [{"row": rid, "verdict": verdict.get(rid)} for rid in coverage.get(claim["beat"], [])]
+    return summary
 
 
 def limited_status(case_dir: Path, manifest: dict) -> dict | None:
@@ -301,6 +300,7 @@ def evaluate(case_dir: Path, candidate: Path | None = None, manifest: dict | Non
         "contract_changes": contract_changes(rows),
         "spec_baseline": spec_baseline(case_dir, manifest),
         "solver_deviations": spec_audit.solver_deviations(manifest),
+        "coupling": coupling_review(manifest, coverage, verdicts),
         "limited": limited_status(case_dir, manifest),
     }
 
@@ -337,6 +337,10 @@ def main() -> None:
                                  "contract_changes": [c["row"] for c in report.get("contract_changes", [])],
                                  "spec_changed_since_baseline": (report.get("spec_baseline") or {}).get("changed"),
                                  "solver_deviations": [d["object"] for d in report.get("solver_deviations", [])],
+                                 "coupling_approximations": [a["edge"] for a in (report.get("coupling") or {})
+                                                             .get("approximations", [])],
+                                 "not_achievable": [f"{c['beat']}:{c['kind']}" for c in (report.get("coupling") or {})
+                                                    .get("not_achievable", [])],
                                  "marked_stale": report.get("marked_stale", [])})
     text = json.dumps(report, indent=2, ensure_ascii=False)
     if args.out:

@@ -137,6 +137,55 @@ class SpecBaselineTest(CaseTest):
         self.assertEqual((False, False), (out["spec_baseline"]["created"], out["spec_baseline"]["matches"]))
         self.assertEqual(first, (self.case / "reports" / "spec_baseline.json").read_text(encoding="utf-8"))
 
+    def test_rows_frozen_with_the_spec(self):
+        self.audit()
+        baseline = json.loads((self.case / "reports" / "spec_baseline.json").read_text(encoding="utf-8"))
+        rows = gc.read_manifest(self.case)["requirements_matrix"]
+        self.assertEqual([r["id"] for r in rows], [r["id"] for r in baseline["rows"]])
+        for row in baseline["rows"]:
+            self.assertEqual({"id", "pass_predicate", "tolerances", "measures"}, set(row))
+
+    def test_audit_without_matrix_does_not_freeze(self):
+        m = gc.read_manifest(self.case)
+        m.pop("requirements_matrix")
+        gc.write_manifest(self.case, m)
+        code, out = self.audit()
+        self.assertEqual(0, code, out)
+        self.assertFalse(out["spec_baseline"]["created"])
+        self.assertIn("requirements_matrix", out["spec_baseline"]["problem"])
+        self.assertFalse((self.case / "reports" / "spec_baseline.json").exists())
+
+    def test_gate_lists_row_changes_without_changing_verdicts(self):
+        self.audit()
+        before = {r["row"]: r["verdict"] for r in self.gate()[1]["rows"]}
+        m = gc.read_manifest(self.case)
+        m["requirements_matrix"][0]["pass_predicate"] = "looser"
+        m["requirements_matrix"].append({"id": "extra", "text": "extra", "category": "scene",
+                                         "pass_predicate": "measured", "status": "unknown", "covers": [],
+                                         "measures": [{"quantity": "count", "comparison": "==", "value": 1}]})
+        gc.write_manifest(self.case, m)
+        code, report = self.gate()
+        self.assertTrue(report["spec_baseline"]["changed"])
+        self.assertEqual({"added": ["extra"], "removed": [], "changed": [m["requirements_matrix"][0]["id"]]},
+                         report["spec_baseline"]["diff"]["rows"])
+        self.assertNotIn("objects", report["spec_baseline"]["diff"])
+        after = {r["row"]: r["verdict"] for r in report["rows"]}
+        self.assertEqual(before, {k: v for k, v in after.items() if k != "extra"})
+
+    def test_baseline_without_rows_compares_spec_only(self):
+        self.audit()
+        path = self.case / "reports" / "spec_baseline.json"
+        baseline = json.loads(path.read_text(encoding="utf-8"))
+        baseline.pop("rows")
+        path.write_text(json.dumps(baseline), encoding="utf-8")
+        m = gc.read_manifest(self.case)
+        m["requirements_matrix"][0]["pass_predicate"] = "looser"
+        gc.write_manifest(self.case, m)
+        code, report = self.gate()
+        self.assertFalse(report["spec_baseline"]["changed"])
+        code, out = self.audit()
+        self.assertTrue(out["spec_baseline"]["matches"])
+
     def test_failing_audit_does_not_freeze(self):
         m = gc.read_manifest(self.case)
         m["contract"]["story"]["beats"][0]["id"] = m["contract"]["story"]["beats"][1]["id"]
@@ -154,6 +203,19 @@ class SpecBaselineTest(CaseTest):
         code, report = self.gate()
         self.assertTrue(report["spec_baseline"]["changed"])
         self.assertEqual([name], report["spec_baseline"]["diff"]["objects"]["changed"])
+        self.assertTrue(report["spec_baseline"]["requirements_changed"])
+
+    def test_gate_lists_implementation_changes_apart(self):
+        self.audit()
+        m = gc.read_manifest(self.case)
+        name = m["object_contracts"][0]["name"]
+        m["object_contracts"][0]["solver_owner"] = "Bullet driven by a motor constraint"
+        gc.write_manifest(self.case, m)
+        code, report = self.gate()
+        baseline = report["spec_baseline"]
+        self.assertTrue(baseline["changed"])
+        self.assertFalse(baseline["requirements_changed"])
+        self.assertEqual({"implementation": {"objects": {name: ["solver_owner"]}}}, baseline["diff"])
 
     def test_gate_unchanged_spec(self):
         self.audit()

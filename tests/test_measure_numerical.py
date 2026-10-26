@@ -51,6 +51,22 @@ class NumericalTest(unittest.TestCase):
         self.assertGreater(f["value"], 5.0)
         self.assertAlmostEqual(10.0, r["measurements"]["stability"]["max_extent_m"], places=4)
 
+    def test_rest_jitter_passes_on_window_displacement(self):
+        r = self.r["rest_jitter"]
+        self.assertEqual("pass", r["status"])
+        m = r["measurements"]["rest_displacement"]
+        self.assertAlmostEqual(0.001, m["max_window_displacement_m"], places=6)
+        self.assertAlmostEqual(0.024, m["max_step_speed_m_s"], places=5)  # reported, not judged
+        self.assertEqual([1, 25], m["window"])
+
+    def test_rest_creep_fails(self):
+        r = self.r["rest_creep"]
+        self.assertEqual("fail", r["status"])
+        f = r["first_failure"]
+        self.assertEqual(("cube", "moved during the rest window"), (f["object"], f["reason"]))
+        self.assertGreater(f["value"], 0.003)
+        self.assertAlmostEqual(0.024, r["measurements"]["rest_displacement"]["max_window_displacement_m"], places=5)
+
 
 if __name__ == "__main__":
     unittest.main()

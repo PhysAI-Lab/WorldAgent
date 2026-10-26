@@ -109,4 +109,15 @@ cloth = good_cloth()
 cloth.modifiers["SolverSubdivision"].use_adaptive_subdivision = True
 out["adaptive"] = as_dict(cloth_setup(cloth))
 
+reset()
+bpy.ops.mesh.primitive_cube_add(size=0.4, location=(0, 0, 1))
+balloon = bpy.context.active_object
+balloon.name = "balloon"
+inflate = balloon.modifiers.new("Cloth", "CLOTH")
+inflate.settings.use_pressure = True
+inflate.settings.uniform_pressure_force = 5.0
+inflate.settings.use_internal_springs = True
+inflate.settings.time_scale = 0.5
+out["pressure_closed"] = as_dict(cloth_setup(balloon))
+
 print("WORLDAGENT_RESULT " + json.dumps(out, default=str))

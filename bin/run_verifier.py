@@ -7,8 +7,10 @@ can only become `pass` from a measured result:
 
 1. hash the candidate .blend, the verifier script, any --input files, the
    spec part of manifest.json, and the shared helper library;
-2. copy the candidate into a temporary directory and check the copy's hash; a disk point
-   cache folder next to the candidate (blendcache_<candidate name>/) is copied with it;
+2. copy the candidate into a temporary directory and check the copy's hash; the files of a
+   disk point cache folder next to the candidate (blendcache_<candidate name>/) are hard-linked
+   into it (copied when the temporary directory is on another filesystem), so a cache Blender
+   frees there only loses the link;
 3. run `blender --background --factory-startup <copy> --python-exit-code 1
    --python-expr <add lib/ to sys.path; rebase // paths> --python <script> -- --out <result.json>
    --case <case_dir> --row <row_id>` (fresh process,
@@ -17,9 +19,11 @@ can only become `pass` from a measured result:
    copy (fluid domain caches, external point caches, mesh caches, cache files, volumes,
    images, movie clips) at the candidate's own folder, in memory only, so caches stored
    relative to the candidate are read rather than silently missing; absolute paths are left
-   as they are. The report lists them in `rebased_paths`. Rebased cache paths are hashed
-   before the verifier runs and again after; if the verifier changed one (a stray bake or
-   free), the row is `unknown` (see `cache_check`). The candidate's folder is also in
+   as they are. The report lists them in `rebased_paths`. Rebased cache paths and the disk
+   point cache folder are fingerprinted (file list, sizes, mtime_ns; no content hashing)
+   before the verifier runs and again after; if the verifier changed one (a stray bake, free
+   or overwrite), the row is `unknown` (see `cache_check`). Only --input files get a full
+   sha256 (input_hashes, for staleness). The candidate's folder is also in
    $WORLDAGENT_CANDIDATE_DIR;
 4. validate the result (see RESULT RULES), write a report under <case>/reports/,
    and update the row in manifest.json's requirements_matrix;
@@ -73,7 +77,7 @@ THRESHOLD_KEYS = ("tolerances", "measures")
 SPEC_KEYS = ("contract", "object_contracts", "topology")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import worldagent_env  # noqa: E402  (Blender lookup shared with the SessionStart hook)
-import worldagent_runtime  # noqa: E402  (lib/, put on sys.path by worldagent_env; hashes rebased caches)
+import worldagent_runtime  # noqa: E402  (lib/, put on sys.path by worldagent_env; fingerprints rebased caches)
 import case_trace  # noqa: E402  (case history; never affects a verdict)
 
 SPEC_HASH_KEY = "manifest.json#spec"
@@ -129,6 +133,22 @@ def sha256_path(path: Path) -> str:
     for item in sorted(files):
         digest.update(item.relative_to(path).as_posix().encode() + b"\0" + sha256_file(item).encode() + b"\n")
     return digest.hexdigest()
+
+
+def link_tree(src: Path, dst: Path) -> dict:
+    """Recreate src under dst with a hard link per file (a copy where linking fails, e.g. across filesystems)."""
+    linked = copied = 0
+    for top, dirs, files in os.walk(src):
+        target = dst / Path(top).relative_to(src)
+        target.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            try:
+                os.link(os.path.join(top, name), target / name)
+                linked += 1
+            except OSError:
+                shutil.copy2(os.path.join(top, name), target / name)
+                copied += 1
+    return {"linked": linked, "copied": copied}
 
 
 def spec_hash(manifest: dict) -> str:
@@ -333,16 +353,17 @@ def main() -> None:
     proc = None
     rebased = None
     cache_check = None
+    disk_cache_copy = None
     with tempfile.TemporaryDirectory(prefix="worldagent_verify_") as tmp:
         copy = Path(tmp) / candidate.name
         shutil.copy2(candidate, copy)
         if sha256_file(copy) != hashes[rel(candidate, case_dir)]:
             fail_setup("candidate copy hash differs from the original")
-        # Disk point caches are always read from //blendcache_<file name>/. A copy, not a link:
-        # Blender frees such a cache on many setting changes, which through a link would delete the bake.
+        # Disk point caches are always read from //blendcache_<file name>/. Hard links per file, not a
+        # folder link: Blender frees such a cache on many setting changes, which unlinks only the
+        # temporary names; an overwrite in place reaches the original and the fingerprint sees it.
         disk_cache = candidate.parent / f"blendcache_{candidate.stem}"
-        if disk_cache.is_dir():
-            shutil.copytree(disk_cache, Path(tmp) / disk_cache.name)
+        disk_cache_copy = link_tree(disk_cache, Path(tmp) / disk_cache.name) if disk_cache.is_dir() else None
         out = Path(tmp) / "result.json"
         rebase_out = Path(tmp) / "rebased.json"
         # --python-exit-code must precede --python: Blender applies arguments in order.
@@ -356,7 +377,11 @@ def main() -> None:
                "--", "--out", str(out), "--case", str(case_dir), "--row", args.row]
         env = {**os.environ, "WORLDAGENT_CANDIDATE_DIR": str(candidate.parent)}
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout, cwd=case_dir, env=env)
+            # Blender writes side files into its working folder (Mantaflow's waveletNoiseTile.bin, the FLIP
+            # add-on's icons/); keep them under .work/ so the case layout stays valid.
+            work_cwd = case_dir / ".work" / "blender"
+            work_cwd.mkdir(parents=True, exist_ok=True)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout, cwd=work_cwd, env=env)
         except subprocess.TimeoutExpired:
             problem = f"verifier timed out after {args.timeout:g} s"
         try:
@@ -365,12 +390,12 @@ def main() -> None:
             rebase_info = None  # the rebase did not run (a crash before it, or a Blender stand-in)
         if isinstance(rebase_info, dict):
             rebased = rebase_info.get("rebased_paths")
-            before = rebase_info.get("hashes") or {}
+            before = rebase_info.get("fingerprints") or {}
             started_check = time.time()
-            changed = [p for p, digest in before.items()
-                       if not os.path.exists(p) or worldagent_runtime.hash_path(p) != digest]
-            cache_check = {"paths": sorted(before), "changed": changed,
-                           "seconds": round(rebase_info.get("hash_seconds", 0) + time.time() - started_check, 3)}
+            changed = sorted(p for p, mark in before.items() if worldagent_runtime.fingerprint(p) != mark)
+            cache_check = {"paths": sorted(before), "changed": changed, "method": "fingerprint",
+                           "seconds": round(rebase_info.get("fingerprint_seconds", 0) + time.time() - started_check,
+                                            4)}
             if changed and problem is None:
                 problem = "verifier changed a cache it read: " + ", ".join(changed)
         if problem is None and proc.returncode != 0:
@@ -413,6 +438,7 @@ def main() -> None:
         "input_copies": input_copies,
         "rebased_paths": rebased,
         "cache_check": cache_check,
+        "disk_cache_copy": disk_cache_copy,
         "result": result,
         "returncode": proc.returncode if proc else None,
         "stdout_tail": tail(proc.stdout) if proc else [],

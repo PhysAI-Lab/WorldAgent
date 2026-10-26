@@ -105,7 +105,7 @@
       ]
     },
     "tolerance": {
-      "description": "One tolerance and its basis. Default rule: value_m = max(screen_m, solver_m), where screen_m is 5 pixels at the final delivery resolution at that distance (worldagent_measure.scale.pixel_footprint) and solver_m is the solver's resolution (collision margin for rigid bodies, one grid cell for grid solvers, collision distance for cloth and soft body). A smaller value only when the request asks for that precision (basis request). Numeric tolerances (centre of mass, volume) are a ratio of the object's size, not an absolute length.",
+      "description": "One tolerance and its basis. Default rule: value_m = max(screen_m, solver_m), where screen_m is 5 pixels at the reference resolution at that distance (worldagent_measure.scale.pixel_footprint) and solver_m is the solver's resolution (collision margin for rigid bodies, one grid cell for grid solvers, collision distance for cloth and soft body). The reference resolution is the final render resolution scaled up, aspect ratio kept, until its longer side is at least 1920 px (a 320x180 final render uses 1920x1080; 3840x2160 is used as is), so a low test resolution does not loosen tolerances. A smaller value only when the request asks for that precision (basis request). Numeric tolerances (centre of mass, volume) are a ratio of the object's size, not an absolute length. Basis outcome: a threshold derived from an outcome the request states (e.g. 'the tower falls over' -> top block centre below 0.45 of its start height); derivation names the request clause. An outcome may be looser than the default rule, never tighter: an outcome value_m also gives screen_m and solver_m and is at least max(screen_m, solver_m); a tighter value needs basis request. A ratio outcome is not checked against the default rule.",
       "type": "object",
       "required": ["quantity", "basis", "derivation"],
       "properties": {
@@ -113,10 +113,10 @@
         "value_m": { "type": "number", "exclusiveMinimum": 0, "description": "Tolerance as a length in metres." },
         "ratio": { "type": "number", "exclusiveMinimum": 0, "description": "Tolerance as a fraction of the length named in of." },
         "of": { "type": "string", "minLength": 1, "description": "The length a ratio refers to, e.g. 'crate_a bbox diagonal'." },
-        "basis": { "enum": ["screen", "solver", "numeric", "request"] },
-        "screen_m": { "type": "number", "exclusiveMinimum": 0, "description": "5 pixels at the final delivery resolution at that distance, in metres." },
+        "basis": { "enum": ["screen", "solver", "numeric", "request", "outcome"] },
+        "screen_m": { "type": "number", "exclusiveMinimum": 0, "description": "5 pixels at the reference resolution (the final resolution scaled up to a longer side of at least 1920 px) at that distance, in metres." },
         "solver_m": { "type": "number", "minimum": 0, "description": "The solver's resolution in metres." },
-        "derivation": { "type": "string", "minLength": 1, "description": "The calculation, e.g. '5 px at 1920x1080 from the camera at 1.6 m = 3.0 mm' or 'Bullet collision margin 1 mm', or the request clause for basis request." }
+        "derivation": { "type": "string", "minLength": 1, "description": "The calculation, e.g. '5 px at 1920x1080 from the camera at 1.6 m = 3.0 mm' or 'Bullet collision margin 1 mm', or the request clause for basis request or outcome." }
       },
       "oneOf": [
         { "required": ["value_m"], "not": { "required": ["ratio"] } },
@@ -125,7 +125,8 @@
       "allOf": [
         { "if": { "required": ["basis"], "properties": { "basis": { "const": "numeric" } } }, "then": { "required": ["ratio"] } },
         { "if": { "required": ["basis"], "properties": { "basis": { "const": "screen" } } }, "then": { "required": ["value_m", "screen_m"] } },
-        { "if": { "required": ["basis"], "properties": { "basis": { "const": "solver" } } }, "then": { "required": ["value_m", "solver_m"] } }
+        { "if": { "required": ["basis"], "properties": { "basis": { "const": "solver" } } }, "then": { "required": ["value_m", "solver_m"] } },
+        { "if": { "required": ["basis", "value_m"], "properties": { "basis": { "const": "outcome" } } }, "then": { "required": ["screen_m", "solver_m"] } }
       ]
     },
     "measure": {

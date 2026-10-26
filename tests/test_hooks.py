@@ -63,6 +63,17 @@ class GuardTest(unittest.TestCase):
                                        "bpy.ops.wm.save_as_mainfile(filepath='.work/render/scene.blend')\n"))
         self.assertEqual(0, self.write("/c/src/verify_contact.py", "print('measure')\n"))
 
+    def test_portable_final_copy_is_guarded_too(self):
+        portable = "scene_final_portable.blend"
+        self.assertEqual(2, self.write(f"/c/{portable}"))
+        self.assertEqual(2, self.write("/c/src/finish.py",
+                                       f"bpy.ops.wm.save_as_mainfile(filepath='/c/{portable}')\n"))
+        for command in [f"cp a.blend case/{portable}", f"rm case/{portable}", f"echo x > {portable}"]:
+            with self.subTest(command=command):
+                self.assertEqual(2, self.bash(command))
+        self.assertEqual(0, self.bash(f"sha256sum case/{portable}"))
+        self.assertEqual(0, self.bash(f"cp case/{portable} /tmp/review.blend"))
+
     def test_blocks_shell_writes(self):
         for command in [
             "cp .work/candidates/c1/scene.blend case/scene_final.blend",

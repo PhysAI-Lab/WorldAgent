@@ -1,0 +1,369 @@
+{
+  "contract": {
+    "simulation_class": [
+      "rigid_body",
+      "liquid",
+      "coupled"
+    ],
+    "fps": 24,
+    "frame_range": [
+      1,
+      240
+    ],
+    "story": {
+      "long_form": false,
+      "prompt_length_chars": 118,
+      "required_beat_count": 4,
+      "minimum_duration_seconds": 10,
+      "duration_formula": "4 beats, each at least its readable minimum, at 24 fps",
+      "beats": [
+        {
+          "id": "establish",
+          "prompt_clause": "a hotel lobby with a shallow pool and luggage on the edge",
+          "owner": "static scene and camera",
+          "frame_interval": [
+            1,
+            48
+          ],
+          "minimum_readable_seconds": 2,
+          "depends_on": [],
+          "pass_predicate": "luggage and crate at rest on the pool edge",
+          "status": "unknown"
+        },
+        {
+          "id": "slide",
+          "prompt_clause": "a suitcase slides off the edge",
+          "owner": "keyed motor input on the cognac suitcase",
+          "frame_interval": [
+            49,
+            96
+          ],
+          "minimum_readable_seconds": 2,
+          "depends_on": [
+            "establish"
+          ],
+          "allowed_inputs": [
+            "INPUT_slide_force"
+          ],
+          "pass_predicate": "cognac suitcase moves at least 0.4 m toward the pool",
+          "status": "unknown",
+          "interactions": [
+            {
+              "cause": "slide_motor",
+              "effect": "suitcase_cognac_leather",
+              "kind": "translate"
+            }
+          ]
+        },
+        {
+          "id": "splash",
+          "prompt_clause": "the luggage and crate fall in and splash",
+          "owner": "Bullet rigid bodies -> FLIP obstacles",
+          "frame_interval": [
+            97,
+            168
+          ],
+          "minimum_readable_seconds": 3,
+          "depends_on": [
+            "slide"
+          ],
+          "pass_predicate": "water rises around each body within 6 frames of its entry",
+          "status": "unknown",
+          "interactions": [
+            {
+              "cause": "rigid",
+              "effect": "water_initial",
+              "kind": "splash"
+            }
+          ]
+        },
+        {
+          "id": "settle",
+          "prompt_clause": "the water calms with the luggage on the pool floor",
+          "owner": "FLIP Fluids",
+          "frame_interval": [
+            169,
+            240
+          ],
+          "minimum_readable_seconds": 3,
+          "depends_on": [
+            "splash"
+          ],
+          "pass_predicate": "surface speed below 0.05 m/s for the last second",
+          "status": "unknown"
+        }
+      ]
+    }
+  },
+  "object_contracts": [
+    {
+      "name": "pool",
+      "role": "pool_basin",
+      "visible_mesh": "pool",
+      "simulation_mesh": "pool",
+      "proxy": null,
+      "dimensions_m": [
+        8.0,
+        4.0,
+        1.2
+      ],
+      "mass_kg": null,
+      "density_kg_m3": null,
+      "initial_support": "foundation",
+      "collision": {
+        "representation": "evaluated mesh",
+        "margin_m": 0,
+        "self_collision": "none"
+      },
+      "solver_owner": "fixed scene",
+      "simulation_class": "fixed",
+      "blender_system": "none",
+      "allowed_inputs": [],
+      "solver_owned_outputs": [],
+      "frame_range": [
+        1,
+        240
+      ],
+      "acceptance": [
+        "zero interpenetration across full range",
+        "finite evaluated coordinates"
+      ]
+    },
+    {
+      "name": "suitcase_cognac_leather",
+      "role": "suitcase",
+      "visible_mesh": "suitcase_cognac_leather",
+      "simulation_mesh": "suitcase_cognac_leather",
+      "proxy": null,
+      "dimensions_m": [
+        0.7,
+        0.45,
+        0.25
+      ],
+      "mass_kg": 18.0,
+      "density_kg_m3": null,
+      "initial_support": "pool",
+      "collision": {
+        "representation": "evaluated mesh",
+        "margin_m": 0,
+        "self_collision": "none"
+      },
+      "solver_owner": "Bullet rigid body",
+      "simulation_class": "rigid_body",
+      "blender_system": "bullet_rigid_body",
+      "allowed_inputs": [
+        "INPUT_slide_force"
+      ],
+      "solver_owned_outputs": [
+        "location",
+        "rotation"
+      ],
+      "frame_range": [
+        1,
+        240
+      ],
+      "acceptance": [
+        "zero interpenetration across full range",
+        "finite evaluated coordinates"
+      ]
+    },
+    {
+      "name": "suitcase_linen_canvas",
+      "role": "suitcase",
+      "visible_mesh": "suitcase_linen_canvas",
+      "simulation_mesh": "suitcase_linen_canvas",
+      "proxy": null,
+      "dimensions_m": [
+        0.6,
+        0.4,
+        0.22
+      ],
+      "mass_kg": 14.0,
+      "density_kg_m3": null,
+      "initial_support": "pool",
+      "collision": {
+        "representation": "evaluated mesh",
+        "margin_m": 0,
+        "self_collision": "none"
+      },
+      "solver_owner": "Bullet rigid body",
+      "simulation_class": "rigid_body",
+      "blender_system": "bullet_rigid_body",
+      "allowed_inputs": [],
+      "solver_owned_outputs": [
+        "location",
+        "rotation"
+      ],
+      "frame_range": [
+        1,
+        240
+      ],
+      "acceptance": [
+        "zero interpenetration across full range",
+        "finite evaluated coordinates"
+      ]
+    },
+    {
+      "name": "plastic_crate_orange",
+      "role": "crate",
+      "visible_mesh": "plastic_crate_orange",
+      "simulation_mesh": "plastic_crate_orange",
+      "proxy": null,
+      "dimensions_m": [
+        0.5,
+        0.35,
+        0.3
+      ],
+      "mass_kg": 6.0,
+      "density_kg_m3": null,
+      "initial_support": "pool",
+      "collision": {
+        "representation": "evaluated mesh",
+        "margin_m": 0,
+        "self_collision": "none"
+      },
+      "solver_owner": "Bullet rigid body",
+      "simulation_class": "rigid_body",
+      "blender_system": "bullet_rigid_body",
+      "allowed_inputs": [],
+      "solver_owned_outputs": [
+        "location",
+        "rotation"
+      ],
+      "frame_range": [
+        1,
+        240
+      ],
+      "acceptance": [
+        "zero interpenetration across full range",
+        "finite evaluated coordinates"
+      ]
+    },
+    {
+      "name": "water_initial",
+      "role": "pool_water",
+      "visible_mesh": "water_initial",
+      "simulation_mesh": "water_initial",
+      "proxy": null,
+      "dimensions_m": [
+        7.6,
+        3.6,
+        0.6
+      ],
+      "mass_kg": null,
+      "density_kg_m3": null,
+      "initial_support": "pool",
+      "collision": {
+        "representation": "evaluated mesh",
+        "margin_m": 0,
+        "self_collision": "none"
+      },
+      "solver_owner": "FLIP Fluids",
+      "simulation_class": "liquid",
+      "blender_system": "flip_fluids",
+      "allowed_inputs": [],
+      "solver_owned_outputs": [
+        "surface"
+      ],
+      "frame_range": [
+        1,
+        240
+      ],
+      "acceptance": [
+        "zero interpenetration across full range",
+        "finite evaluated coordinates"
+      ]
+    }
+  ],
+  "topology": {
+    "regions": [
+      {
+        "id": "lobby"
+      },
+      {
+        "id": "pool"
+      }
+    ],
+    "edges": [
+      [
+        "lobby",
+        "open",
+        "pool"
+      ]
+    ],
+    "support": "pool basin -> luggage, crate and water",
+    "coupling": [
+      "Bullet luggage -> FLIP obstacles; one-way"
+    ],
+    "solver_graph": {
+      "nodes": [
+        {
+          "id": "slide_motor",
+          "input": "keyed",
+          "objects": [
+            "INPUT_slide_force"
+          ]
+        },
+        {
+          "id": "rigid",
+          "objects": [
+            "suitcase_cognac_leather",
+            "suitcase_linen_canvas",
+            "plastic_crate_orange"
+          ],
+          "cache": "in .blend"
+        },
+        {
+          "id": "water",
+          "objects": [
+            "water_initial"
+          ],
+          "domain": "flip_domain",
+          "cache": ".work/cache/c05"
+        }
+      ],
+      "edges": [
+        {
+          "id": "motor_to_rigid",
+          "from": "slide_motor",
+          "to": "rigid",
+          "channel": "kinematic_boundary",
+          "objects": [
+            "INPUT_slide_force"
+          ],
+          "targets": [
+            "suitcase_cognac_leather"
+          ],
+          "exchanged": [
+            "motor target velocity frames 49-60"
+          ],
+          "omitted_reactions": [
+            "none: the motor is a declared input"
+          ]
+        },
+        {
+          "id": "rigid_to_water",
+          "from": "rigid",
+          "to": "water",
+          "channel": "obstacle",
+          "objects": [
+            "suitcase_cognac_leather",
+            "suitcase_linen_canvas",
+            "plastic_crate_orange"
+          ],
+          "exchanged": [
+            "evaluated mesh per frame (export_animated_mesh)"
+          ],
+          "omitted_reactions": [
+            "water pressure, drag and buoyancy on the luggage and crate"
+          ]
+        }
+      ],
+      "bake_order": [
+        "slide_motor",
+        "rigid",
+        "water"
+      ]
+    }
+  }
+}

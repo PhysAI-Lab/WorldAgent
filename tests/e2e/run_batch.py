@@ -4,7 +4,8 @@
 For every case in cases.json (or --only), the runner:
 1. makes a workspace <out>/<id>/ and gives the agent the case's request once, asking it to run
    the WorldAgent `run` skill end to end into <out>/<id>/case/ without questions;
-2. sets WORLDAGENT_TIME_BUDGET_HOURS for the run and kills the agent after --timeout-hours;
+2. sets WORLDAGENT_TIME_BUDGET_HOURS for the run (plus the case's optional `environment`, a map of
+   WORLDAGENT_* settings such as a small render resolution) and kills the agent after --timeout-hours;
 3. evaluates the case folder with the plugin's own tools (no agent involved): manifest status
    and budget, the gate verdict on the candidate the rows name, failing rows, contract changes,
    trace notes, the final render of that candidate (never a later preview or another candidate's
@@ -83,6 +84,15 @@ def command_for(args, prompt: str) -> list[str]:
     filled = template.replace("{plugin_dir}", plugin_dir)
     parts = shlex.split(filled.replace("{prompt}", "__PROMPT__"))
     return [prompt if part == "__PROMPT__" else part for part in parts]
+
+
+def case_environment(case: dict) -> dict[str, str]:
+    """The case's `environment` map (WORLDAGENT_* settings only), as strings."""
+    extra = case.get("environment") or {}
+    bad = [k for k in extra if not str(k).startswith("WORLDAGENT_")]
+    if bad:
+        sys.exit(f"case {case['id']}: environment may only set WORLDAGENT_* settings, not {', '.join(bad)}")
+    return {str(k): str(v) for k, v in extra.items()}
 
 
 def run_agent(cmd: list[str], workspace: Path, env: dict, timeout_s: float) -> dict:
@@ -259,13 +269,15 @@ def main() -> None:
         if not args.check_only:
             prompt = (args.prompt_template or PROMPTS[args.agent]).format(case="case", request=case["request"])
             cmd = command_for(args, prompt)
+            extra = case_environment(case)
             if args.dry_run:
-                print(f"[{case['id']}] cwd={workspace}\n  " + shlex.join(cmd))
+                print(f"[{case['id']}] cwd={workspace}\n  " + shlex.join(cmd)
+                      + ("\n  env: " + " ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""))
                 continue
             if (workspace / "case").exists():
                 sys.exit(f"{workspace / 'case'} exists; use another --out or --check-only")
             workspace.mkdir(parents=True, exist_ok=True)
-            env = {**os.environ, "WORLDAGENT_TIME_BUDGET_HOURS": f"{budget:g}"}
+            env = {**os.environ, "WORLDAGENT_TIME_BUDGET_HOURS": f"{budget:g}", **extra}
             print(f"[{case['id']}] running {args.agent} (budget {budget:g} h, timeout {timeout_s / 3600:.1f} h)", flush=True)
             entry["run"] = {"agent": args.agent, "command": cmd, **run_agent(cmd, workspace, env, timeout_s)}
             (workspace / "run.json").write_text(json.dumps(entry["run"], indent=2) + "\n", encoding="utf-8")

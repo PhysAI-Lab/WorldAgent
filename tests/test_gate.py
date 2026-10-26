@@ -17,6 +17,31 @@ GATE = ROOT / "bin" / "gate.py"
 _spec = importlib.util.spec_from_file_location("gate_case", ROOT / "tests" / "fixtures" / "gate" / "gate_case.py")
 gc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gc)
+# crate_a simulated by Cloth next to Bullet crate_b needs a solver graph; the deviation fixture has one.
+JELLY_GRAPH = json.loads((ROOT / "tests" / "fixtures" / "specs" / "valid_justified_solver_deviation.json")
+                         .read_text(encoding="utf-8"))["topology"]["solver_graph"]
+
+
+def jelly(m, **fields):
+    """crate_a as an elastic body simulated by Cloth, with the solver graph two systems need."""
+    crate = next(o for o in m["object_contracts"] if o["name"] == "crate_a")
+    crate.update(simulation_class="soft_body", blender_system="cloth", **fields)
+    m["contract"]["simulation_class"] = ["rigid_body", "soft_body"]
+    m["topology"]["solver_graph"] = json.loads(json.dumps(JELLY_GRAPH))
+
+
+def scripted_push(m, **claim):
+    """A scripted transfer from the Bullet crate_b to the Cloth crate_a, claimed in beat fall."""
+    jelly(m, solver_choice_reason={"reason": "Soft Body probe lost volume", "evidence": ["reports/probe.json"]})
+    m["contract"]["simulation_class"].append("coupled")
+    m["topology"]["solver_graph"]["edges"].append({
+        "id": "crate_b_spins_crate_a", "from": "rigid", "to": "cloth", "channel": "scripted_transfer",
+        "objects": ["crate_b"], "via": ["spin_driver"], "approximation": "contact torque from sampled impulses",
+        "method": "src/verify_contact.py: impulse to torque", "assumptions": ["restitution 0.2"],
+        "omitted_reactions": ["crate_a's push back on crate_b"]})
+    fall = next(b for b in m["contract"]["story"]["beats"] if b["id"] == "fall")
+    fall["interactions"] = [{"cause": "rigid", "effect": "crate_a", "kind": "rotate"},
+                            {"cause": "rigid", "effect": "crate_a", "kind": "trigger", **claim}]
 
 
 class GateTest(unittest.TestCase):
@@ -138,10 +163,7 @@ class GateTest(unittest.TestCase):
         code, report = self.gate()
         self.assertEqual([], report["solver_deviations"])
         m = gc.read_manifest(self.case)
-        crate = next(o for o in m["object_contracts"] if o["name"] == "crate_a")
-        crate.update(simulation_class="soft_body", blender_system="cloth",
-                     solver_choice_reason={"reason": "Soft Body probe lost volume", "evidence": ["reports/probe.json"]})
-        m["contract"]["simulation_class"] = ["rigid_body", "soft_body"]
+        jelly(m, solver_choice_reason={"reason": "Soft Body probe lost volume", "evidence": ["reports/probe.json"]})
         gc.write_manifest(self.case, m)
         for rid in gc.ROWS:  # re-measure on the changed spec
             gc.record(self.case, rid, "pass")
@@ -153,9 +175,7 @@ class GateTest(unittest.TestCase):
 
     def test_unjustified_solver_deviation_fails_audit(self):
         m = gc.read_manifest(self.case)
-        crate = next(o for o in m["object_contracts"] if o["name"] == "crate_a")
-        crate.update(simulation_class="soft_body", blender_system="cloth")
-        m["contract"]["simulation_class"] = ["rigid_body", "soft_body"]
+        jelly(m)
         gc.write_manifest(self.case, m)
         for rid in gc.ROWS:
             gc.record(self.case, rid, "pass")
@@ -164,6 +184,46 @@ class GateTest(unittest.TestCase):
         self.assertEqual(["solver_choice"], [e["check"] for e in report["spec_audit_errors"]])
         self.assertEqual("crate_a", report["solver_deviations"][0]["object"])
         self.assertIsNone(report["solver_deviations"][0]["reason"])
+
+    def test_coupling_listed_without_changing_verdict(self):
+        code, report = self.gate()
+        self.assertIsNone(report["coupling"])
+        m = gc.read_manifest(self.case)
+        scripted_push(m, achievable=False, reason="no channel switches crate_a; agreed with the user")
+        gc.write_manifest(self.case, m)
+        for rid in gc.ROWS:
+            gc.record(self.case, rid, "pass")
+        code, report = self.gate()
+        self.assertEqual(0, code, report)
+        coupling = report["coupling"]
+        self.assertEqual(["crate_b_spins_crate_a"], [a["edge"] for a in coupling["approximations"]])
+        self.assertEqual([{"beat": "fall", "cause": "rigid", "effect": "crate_a", "kind": "rotate",
+                           "edges": ["crate_b_spins_crate_a"], "rows": [{"row": "contact", "verdict": "pass"}]}],
+                         coupling["approximated_claims"])
+        self.assertEqual(["trigger"], [c["kind"] for c in coupling["not_achievable"]])
+        trace = [json.loads(line) for line in (self.case / "reports" / "trace.jsonl").read_text().splitlines()]
+        gate_event = [e for e in trace if e["type"] == "gate"][-1]
+        self.assertEqual(["crate_b_spins_crate_a"], gate_event["coupling_approximations"])
+        self.assertEqual(["fall:trigger"], gate_event["not_achievable"])
+
+    def test_not_achievable_row_blocked(self):
+        m = gc.read_manifest(self.case)
+        scripted_push(m, achievable=False, reason="no channel switches crate_a; agreed with the user")
+        gc.write_manifest(self.case, m)
+        gc.record(self.case, "camera", "pass")
+        gc.record(self.case, "contact", "blocked")
+        code, report = self.gate()
+        self.assertEqual(1, code)
+        self.assertEqual([], report["spec_audit_errors"])
+        self.assertEqual([{"row": "contact", "verdict": "blocked"}], report["coupling"]["not_achievable"][0]["rows"])
+
+    def test_unprovided_claim_fails_audit(self):
+        m = gc.read_manifest(self.case)
+        scripted_push(m)
+        gc.write_manifest(self.case, m)
+        code, report = self.gate()
+        self.assertEqual(1, code)
+        self.assertEqual(["coupling_claim"], [e["check"] for e in report["spec_audit_errors"]])
 
     def test_unmeasurable_row_fails_audit(self):
         m = gc.read_manifest(self.case)

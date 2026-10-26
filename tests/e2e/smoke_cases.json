@@ -1,0 +1,61 @@
+{
+  "description": "One very small scene per solver class, for a quick end-to-end run of /worldagent:run (Claude Code) or $worldagent:run (Codex): 2 seconds at 24 fps, 320x180, 8 samples, simple procedural geometry, no asset library. Use with run_batch.py --cases tests/e2e/smoke_cases.json --budget-hours 1. The FLIP cases need the FLIP Fluids add-on; without it their liquid rows are blocked.",
+  "cases": [
+    {
+      "id": "smoke_rigid",
+      "kind": "rigid body (Bullet): stacking and toppling",
+      "solver": "bullet_rigid_body",
+      "request": "Three wooden boxes, 10 cm cubes, are stacked in a tower on a flat grey floor. A 6 cm rubber ball rolls along the floor at 1 m/s into the bottom box, and the tower falls over. All boxes come to rest on the floor within 2 seconds. Simulate the boxes and the ball with Blender rigid bodies. Static side camera framing the whole tower. Build everything procedurally, without an asset library. 2 seconds at 24 fps. Final 320x180 Cycles render at 8 samples.",
+      "environment": {"WORLDAGENT_RENDER_RESOLUTION": "320x180", "WORLDAGENT_RENDER_SAMPLES": "8"}
+    },
+    {
+      "id": "smoke_cloth",
+      "kind": "cloth: draping over an obstacle",
+      "solver": "cloth",
+      "request": "A 40 cm square of thin cotton cloth falls from 30 cm above a 15 cm cube on a flat floor, drapes over the cube, and settles with its corners on the floor within 2 seconds. The cloth never passes through the cube or the floor. Simulate the cloth with Blender's Cloth solver. Static camera at a three-quarter view. Build everything procedurally, without an asset library. 2 seconds at 24 fps. Final 320x180 Cycles render at 8 samples.",
+      "environment": {"WORLDAGENT_RENDER_RESOLUTION": "320x180", "WORLDAGENT_RENDER_SAMPLES": "8"}
+    },
+    {
+      "id": "smoke_liquid",
+      "kind": "liquid (FLIP Fluids): dam break in a small tank",
+      "solver": "flip_fluids",
+      "request": "A 10 cm cube of water stands in one corner of an open glass tank 30 cm long, 15 cm wide and 15 cm tall. At the start it is released, collapses, runs to the far wall, splashes up it and settles to a level surface within 2 seconds. No water passes through the tank walls or floor. Simulate the water with FLIP Fluids. Static side camera framing the whole tank. Build everything procedurally, without an asset library. 2 seconds at 24 fps. Final 320x180 Cycles render at 8 samples.",
+      "environment": {"WORLDAGENT_RENDER_RESOLUTION": "320x180", "WORLDAGENT_RENDER_SAMPLES": "8"}
+    },
+    {
+      "id": "smoke_gas",
+      "kind": "gas (Mantaflow): rising smoke under a ceiling",
+      "solver": "mantaflow_gas",
+      "request": "A small disc 5 cm across on a floor emits a short puff of grey smoke for the first half second. The smoke rises, hits a flat plate 40 cm above the floor, and spreads sideways under it within 2 seconds. The smoke does not pass through the plate. Simulate the smoke with Blender's Mantaflow gas. Static side camera framing the floor, the plate and the plume. Build everything procedurally, without an asset library. 2 seconds at 24 fps. Final 320x180 Cycles render at 8 samples.",
+      "environment": {"WORLDAGENT_RENDER_RESOLUTION": "320x180", "WORLDAGENT_RENDER_SAMPLES": "8"}
+    },
+    {
+      "id": "smoke_particles",
+      "kind": "independent particles (Newton): pouring into a box",
+      "solver": "newton_particles",
+      "request": "Two hundred small steel beads, 5 mm across, pour from a small emitter 30 cm above an open box 20 cm wide, fall into the box, bounce, and come to rest on its floor within 2 seconds. No bead passes through the box walls or floor. Simulate the beads as a Blender Newtonian particle system. Static camera looking into the box from above at an angle. Build everything procedurally, without an asset library. 2 seconds at 24 fps. Final 320x180 Cycles render at 8 samples.",
+      "environment": {"WORLDAGENT_RENDER_RESOLUTION": "320x180", "WORLDAGENT_RENDER_SAMPLES": "8"}
+    },
+    {
+      "id": "smoke_granular",
+      "kind": "granular approximation (SPH particles): a small sand pile",
+      "solver": "sph_particles",
+      "request": "Fine dry sand pours for one second from a small opening 20 cm above a flat floor and forms a low conical pile that stops spreading within 2 seconds. No sand passes through the floor. Approximate the sand with a Blender fluid (SPH) particle system and state that it is an approximation. Static side camera framing the stream and the pile. Build everything procedurally, without an asset library. 2 seconds at 24 fps. Final 320x180 Cycles render at 8 samples.",
+      "environment": {"WORLDAGENT_RENDER_RESOLUTION": "320x180", "WORLDAGENT_RENDER_SAMPLES": "8"}
+    },
+    {
+      "id": "smoke_softbody",
+      "kind": "soft body: an elastic ball bouncing",
+      "solver": "soft_body",
+      "request": "A soft rubber ball 8 cm across drops from 25 cm onto a flat floor, squashes visibly on impact, bounces back up, and comes to rest on the floor in its round shape within 2 seconds. It never passes through the floor. Simulate the ball with Blender's Soft Body solver. Static camera at floor level from the side. Build everything procedurally, without an asset library. 2 seconds at 24 fps. Final 320x180 Cycles render at 8 samples.",
+      "environment": {"WORLDAGENT_RENDER_RESOLUTION": "320x180", "WORLDAGENT_RENDER_SAMPLES": "8"}
+    },
+    {
+      "id": "smoke_coupled",
+      "kind": "coupled: rigid body into liquid (Bullet to FLIP, one way)",
+      "solver": "bullet_rigid_body + flip_fluids",
+      "request": "A 5 cm wooden block is dropped from 20 cm above an open glass tank 25 cm wide that holds water 8 cm deep. The block falls into the water, throwing a splash, and the ripples reach the tank walls within 2 seconds. Simulate the block with a Blender rigid body and the water with FLIP Fluids, with the block's motion driving the water; the water does not push the block back, and the block comes to rest on the tank floor. Static side camera framing the whole tank. Build everything procedurally, without an asset library. 2 seconds at 24 fps. Final 320x180 Cycles render at 8 samples.",
+      "environment": {"WORLDAGENT_RENDER_RESOLUTION": "320x180", "WORLDAGENT_RENDER_SAMPLES": "8"}
+    }
+  ]
+}

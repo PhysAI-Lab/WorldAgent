@@ -1,3 +1,6 @@
 .DS_Store
 __pycache__/
 *.pyc
+# Files Blender writes into its working folder
+waveletNoiseTile.bin
+icons/material_library_hash

@@ -95,6 +95,31 @@ class ClothSetupTest(unittest.TestCase):
         self.assertEqual("fail", r["status"])
         self.assertEqual("adaptive subdivision before Cloth", r["first_failure"]["problem"])
 
+    def test_open_sheet_reported(self):
+        r = m(self.r["good"])
+        self.assertEqual(4 * CELLS, r["solver"]["boundary_edges"])
+        self.assertFalse(r["solver"]["closed"])
+        self.assertFalse(r["volumetric_signature"])
+
+    def test_cloth_pressure_closed_reported(self):
+        r = self.r["pressure_closed"]
+        self.assertEqual("pass", r["status"], r.get("first_failure"))  # reported, no new failure
+        c = m(r)
+        self.assertTrue(c["solver"]["closed"])
+        self.assertEqual(0, c["solver"]["non_manifold_edges"])
+        self.assertAlmostEqual(0.4 ** 3, c["solver"]["signed_volume_m3"], places=6)
+        self.assertTrue(c["volumetric_signature"])
+        self.assertTrue(c["cloth_settings"]["use_pressure"])
+        self.assertAlmostEqual(5.0, c["cloth_settings"]["uniform_pressure_force"], places=6)
+        self.assertTrue(c["cloth_settings"]["use_internal_springs"])
+
+    def test_cloth_clock_block(self):
+        t = m(self.r["pressure_closed"])["time"]
+        self.assertEqual(0.5, t["speed"])
+        self.assertAlmostEqual(1.3176, t["real_time_speed_5_1"], places=4)
+        self.assertAlmostEqual(0.5 / 1.3176157, t["clock_ratio_5_1"], places=5)
+        self.assertEqual(1.0, m(self.r["good"])["cloth_settings"]["time_scale"])
+
 
 if __name__ == "__main__":
     unittest.main()

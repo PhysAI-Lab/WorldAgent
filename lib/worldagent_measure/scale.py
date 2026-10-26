@@ -163,8 +163,10 @@ def size_ratios(pairs_with_bounds: list, measure: str = "bbox_diagonal", *, name
 def pixel_footprint(camera, point, resolution=None, *, scene=None, graph=None) -> float:
     """World length of one pixel at `point`, seen from `camera` at `resolution` (metres).
 
-    The screen basis of a distance tolerance is 5 of these at the final delivery resolution
-    (schemas/requirements.schema.json `tolerance`). camera: a camera object, or None for the
+    The screen basis of a distance tolerance is 5 of these at the reference resolution: the
+    final render resolution scaled up, aspect ratio kept, until its longer side is at least
+    1920 px (320x180 -> 1920x1080; 3840x2160 as is), so a low test resolution does not loosen
+    tolerances (schemas/requirements.schema.json `tolerance`). Pass that resolution here. camera: a camera object, or None for the
     scene camera; its evaluated transform at the current frame is used. resolution: (x, y) in
     pixels; None uses the scene's render resolution and percentage. Perspective cameras: the
     length at the point's depth along the view axis; orthographic: the same at every depth.

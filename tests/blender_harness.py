@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -28,7 +29,10 @@ def run_blender_script(script: Path, *args: str, blend: Path | None = None, time
     # Tests control FLIP Fluids themselves (the FLIP bake test passes its path as an argument);
     # a WORLDAGENT_FLIP_PATH exported by the session would make "FLIP missing" cases find it.
     env = {k: v for k, v in os.environ.items() if k != "WORLDAGENT_FLIP_PATH"}
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    # Blender writes side files into its working folder (Mantaflow's waveletNoiseTile.bin, the FLIP
+    # add-on's icons/); run it in a scratch folder so tests never leave them in the repository.
+    with tempfile.TemporaryDirectory(prefix="worldagent_test_cwd_") as cwd:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=cwd)
 
 
 def run_cases(script: Path, *args: str, blend: Path | None = None, timeout: float = 900) -> dict:

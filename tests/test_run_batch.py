@@ -81,3 +81,24 @@ class RunBatchRenderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CaseEnvironmentTest(unittest.TestCase):
+    def test_worldagent_settings_pass_as_strings(self):
+        case = {"id": "c", "environment": {"WORLDAGENT_RENDER_SAMPLES": 8, "WORLDAGENT_RENDER_RESOLUTION": "320x180"}}
+        self.assertEqual({"WORLDAGENT_RENDER_SAMPLES": "8", "WORLDAGENT_RENDER_RESOLUTION": "320x180"},
+                         run_batch.case_environment(case))
+        self.assertEqual({}, run_batch.case_environment({"id": "c"}))
+
+    def test_other_variables_are_refused(self):
+        with self.assertRaises(SystemExit):
+            run_batch.case_environment({"id": "c", "environment": {"PATH": "/tmp"}})
+
+    def test_smoke_cases_cover_every_solver_class(self):
+        cases = json.loads((ROOT / "tests/e2e/smoke_cases.json").read_text(encoding="utf-8"))["cases"]
+        classes = json.loads((ROOT / "schemas/solver_classes.json").read_text(encoding="utf-8"))
+        preferred = {s for v in classes["classes"].values() for s in v["preferred"]} - {"none"}
+        named = {part.strip() for c in cases for part in c["solver"].split("+")}
+        self.assertEqual(set(), preferred - named, "a preferred solver system has no smoke case")
+        for c in cases:
+            run_batch.case_environment(c)

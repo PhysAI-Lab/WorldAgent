@@ -8,7 +8,8 @@ import json
 from pathlib import Path
 
 
-ALLOWED_ROOT_FILES = {"README.md", "manifest.json", "scene_final.blend"}
+# scene_final_portable.blend: promote's delivery copy, with // cache paths that resolve from the case root.
+ALLOWED_ROOT_FILES = {"README.md", "manifest.json", "scene_final.blend", "scene_final_portable.blend"}
 ALLOWED_ROOT_DIRS = {"src", "reports", "previews", "media", "source", ".work"}
 REQUIRED_ROOT_FILES = {"README.md", "manifest.json"}
 REQUIRED_ROOT_DIRS = {"src", "reports", ".work"}
@@ -74,6 +75,8 @@ def main() -> None:
         final_exists = (root / "scene_final.blend").is_file()
         if final_exists and status not in FINAL_STATUSES:
             errors.append(f"scene_final.blend exists while status is {status!r}")
+        if (root / "scene_final_portable.blend").is_file() and not final_exists:
+            errors.append("scene_final_portable.blend exists without scene_final.blend")
         if status in {"validated", "delivered"} and not final_exists:
             errors.append(f"status {status!r} requires scene_final.blend")
         validation = manifest.get("validation")

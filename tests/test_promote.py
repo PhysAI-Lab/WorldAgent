@@ -72,6 +72,11 @@ class PromoteTest(unittest.TestCase):
         self.assertEqual(gc.run_verifier.sha256_file(final), gate_report["candidate_sha256"])
         self.assertTrue((self.case / gc.CANDIDATE).is_file())
         self.assertEqual({"contact", "camera"}, {r["row"] for r in gate_report["reverified"]})
+        self.assertIsNone(out["coupling"])  # no solver graph in this case
+        # no // path resolves elsewhere from the case root, so no delivery copy is written
+        self.assertEqual(([], None), (out["final_relative_paths"], out["portable_scene"]))
+        self.assertIsNone(gate_report["portable_scene"])
+        self.assertFalse((self.case / "scene_final_portable.blend").exists())
         self.assert_layout_passes()
 
     def test_refuses_when_reverification_fails(self):
@@ -141,6 +146,50 @@ class PromoteTest(unittest.TestCase):
         self.assertTrue(out["superseded"].startswith(".work/superseded/scene_final_"))
         self.assertEqual(old_bytes, (self.case / out["superseded"]).read_bytes())
         self.assert_layout_passes()
+
+    def test_replace_supersedes_old_portable_copy(self):
+        """A portable copy belongs to the final scene it was made from; replacing that scene moves it aside."""
+        self.assertEqual(0, self.promote()[0])
+        (self.case / "scene_final_portable.blend").write_bytes(b"BLENDER-portable-c01")
+        self.assert_layout_passes()
+        new = ".work/candidates/c02/scene.blend"
+        gc.add_candidate(self.case, new, b"BLENDER-candidate-c02")
+        for rid in gc.ROWS:
+            gc.record(self.case, rid, "pass", candidate=new)
+        code, out = self.promote(new, "--replace")
+        self.assertEqual(0, code, out)
+        self.assertIsNone(out["portable_scene"])
+        self.assertFalse((self.case / "scene_final_portable.blend").exists())
+        [kept] = (self.case / ".work" / "superseded").glob("scene_final_portable_*.blend")
+        self.assertEqual(b"BLENDER-portable-c01", kept.read_bytes())
+
+    def test_portable_copy_failure_is_reported_not_raised(self):
+        """The stand-in Blender cannot rewrite a file: the record says why and no copy is left behind."""
+        sys.path.insert(0, str(ROOT / "bin"))
+        import promote
+        self.assertEqual(0, self.promote()[0])
+        listed = [{"datablock": 'Object["Domain"]', "property": "cache", "from": "//../../cache/gas",
+                   "final_resolves_to": "elsewhere"}]
+        old = os.environ.get("WORLDAGENT_BLENDER")
+        os.environ["WORLDAGENT_BLENDER"] = str(FAKE_BLENDER)
+        try:
+            record = promote.portable_copy(self.case, self.case / gc.CANDIDATE, listed, "t0")
+        finally:
+            if old is None:
+                os.environ.pop("WORLDAGENT_BLENDER")
+            else:
+                os.environ["WORLDAGENT_BLENDER"] = old
+        self.assertEqual((None, False), (record["path"], record["verified"]))
+        self.assertIn("Blender exited", record["problem"])
+        self.assertFalse((self.case / "scene_final_portable.blend").exists())
+        self.assertEqual([], list((self.case / ".work").glob("portable_*")))
+        self.assertIsNone(promote.portable_copy(self.case, self.case / gc.CANDIDATE, [], "t1"))
+
+    def test_layout_refuses_portable_copy_without_final(self):
+        (self.case / "scene_final_portable.blend").write_bytes(b"BLENDER-portable")
+        proc = subprocess.run([sys.executable, str(LAYOUT), str(self.case)], capture_output=True, text=True)
+        self.assertEqual(1, proc.returncode)
+        self.assertIn("scene_final_portable.blend exists without scene_final.blend", proc.stdout)
 
     def test_replace_refuses_identical_final(self):
         self.assertEqual(0, self.promote()[0])

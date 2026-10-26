@@ -98,13 +98,35 @@ else:
     result.update(status="fail", first_failure={"frame": 5, "alive": alive})
 json.dump(result, open(out, "w"))
 ''',
-    # toggling a point cache setting frees the disk cache
+    # toggling a point cache setting frees the disk cache (deletes the files next to the copy)
     "verify_free_particles.py": r'''
-import bpy, json, sys
+import bpy, json, os, sys
 argv = sys.argv[sys.argv.index("--") + 1:]
 out = argv[argv.index("--out") + 1]
+folder = os.path.join(os.path.dirname(bpy.data.filepath), "blendcache_scene")
+before = len(os.listdir(folder))
 bpy.data.objects["Emitter"].particle_systems[0].point_cache.use_disk_cache = True
-json.dump({"status": "pass", "measurements": {"freed": 1}}, open(out, "w"))
+after = len(os.listdir(folder)) if os.path.isdir(folder) else 0
+json.dump({"status": "pass", "measurements": {"files_before": before, "files_after": after}}, open(out, "w"))
+''',
+    # a write into a disk cache file next to the copy (a hard link to the candidate's file)
+    "verify_overwrite_particles.py": r'''
+import bpy, json, os, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+out = argv[argv.index("--out") + 1]
+folder = os.path.join(os.path.dirname(bpy.data.filepath), "blendcache_scene")
+first = sorted(os.listdir(folder))[0]
+with open(os.path.join(folder, first), "ab") as f:
+    f.write(b"stray")
+json.dump({"status": "pass", "measurements": {"written": first}}, open(out, "w"))
+''',
+    # the runtime's record of the rebase, as a measure helper reads it
+    "verify_rebase_record.py": r'''
+import json, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+out = argv[argv.index("--out") + 1]
+runtime = sys.modules.get("worldagent_runtime")
+json.dump({"status": "pass", "measurements": {"applied": runtime.applied_rebases()}}, open(out, "w"))
 ''',
     # a stray bake writes into the cache the measurement reads
     "verify_rebake.py": r'''
@@ -224,7 +246,19 @@ class RunnerCachePathTest(unittest.TestCase):
         self.assertEqual(('Object["Domain"]', "//cache_gas", real, True),
                          (entry["datablock"], entry["from"], entry["to"], entry["exists"]))
         self.assertEqual(real, report["result"]["measurements"]["cache_dir"])
-        self.assertEqual(([real], []), (report["cache_check"]["paths"], report["cache_check"]["changed"]))
+        disk = str(self.case / CANDIDATES / "c01" / "blendcache_scene")
+        self.assertEqual(([disk, real], [], "fingerprint"), (report["cache_check"]["paths"],
+                                                             report["cache_check"]["changed"],
+                                                             report["cache_check"]["method"]))
+        self.assertGreaterEqual(report["cache_check"]["seconds"], 0)
+
+    def test_rebase_record(self):
+        row, report = self.run_row("verify_rebase_record.py")
+        self.assertEqual("pass", row["status"], report)
+        applied = report["result"]["measurements"]["applied"]
+        self.assertEqual(report["rebased_paths"], applied)
+        [entry] = [e for e in applied if e["property"].endswith("domain_settings.cache_directory")]
+        self.assertEqual("//cache_gas", entry["from"])
 
     def test_copy_without_rebase_reads_all_zero_grid(self):
         """Regression guard: the reason for the rebase. A copy opened elsewhere reads no density."""
@@ -252,9 +286,21 @@ class RunnerCachePathTest(unittest.TestCase):
     def test_freed_point_cache_leaves_the_original(self):
         folder = self.case / CANDIDATES / "c01" / "blendcache_scene"
         before = tree_hash(folder)
-        row, _ = self.run_row("verify_free_particles.py")
-        self.assertEqual("pass", row["status"])
+        row, report = self.run_row("verify_free_particles.py")
+        self.assertEqual("pass", row["status"], report)
+        m = report["result"]["measurements"]
+        self.assertGreater(m["files_before"], m["files_after"])  # Blender deleted the files next to the copy
         self.assertEqual(before, tree_hash(folder))
+        self.assertEqual({"linked": len(before), "copied": 0}, report["disk_cache_copy"])
+
+    def test_write_through_a_linked_disk_cache_is_unknown(self):
+        folder = self.case / CANDIDATES / "c01" / "blendcache_scene"
+        row, report = self.run_row("verify_overwrite_particles.py")
+        if report["disk_cache_copy"]["copied"]:
+            self.skipTest("temporary folder on another filesystem: the cache was copied, not linked")
+        self.assertEqual("unknown", row["status"])
+        self.assertEqual(f"verifier changed a cache it read: {folder}", row["reason"])
+        self.assertEqual([str(folder)], report["cache_check"]["changed"])
 
     def test_verifier_that_changes_a_cache_is_unknown(self):
         row, report = self.run_row("verify_rebake.py")
@@ -278,7 +324,7 @@ class RunnerCachePathTest(unittest.TestCase):
         self.assertEqual((real, False), (entry["to"], entry["exists"]))
         self.assertEqual("fail", row["status"])
         self.assertEqual(real, report["result"]["measurements"]["cache_dir"])
-        self.assertEqual([], report["cache_check"]["paths"])  # nothing there to hash
+        self.assertNotIn(real, report["cache_check"]["paths"])  # nothing there to fingerprint
 
 
 @unittest.skipUnless(BLENDER and FLIP, "set WORLDAGENT_BLENDER and WORLDAGENT_FLIP_PATH to run the FLIP test")

@@ -137,26 +137,33 @@ def value(variable: str, default=None):
 SKIP_DIRS = {"__pycache__"}
 
 
-def hash_path(path) -> str:
-    """sha256 of a file, or of a directory as its sorted relative paths and file hashes (bytecode caches skipped).
+def fingerprint(path) -> str | None:
+    """Cheap change marker of a file or directory: sha256 over sorted (relative path, size, mtime_ns).
 
-    Same digest as bin/run_verifier.py sha256_path, so either side can check the other's hash.
+    No file content is read, so a multi-GB cache costs one stat per file. A write that keeps both
+    size and mtime_ns is not seen; a stray bake, free or overwrite is. None when path is missing.
+    Bytecode caches are skipped.
     """
-    path = Path(path)
-
-    def file_digest(p: Path) -> str:
-        digest = hashlib.sha256()
-        with open(p, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-
-    if path.is_file():
-        return file_digest(path)
+    path = os.path.abspath(str(path))
+    if not os.path.exists(path):
+        return None
+    items = []
+    if os.path.isfile(path):
+        st = os.stat(path)
+        items.append(("", st.st_size, st.st_mtime_ns))
+    else:
+        for top, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            for name in files:
+                full = os.path.join(top, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue  # removed while walking; the listing then differs anyway
+                items.append((os.path.relpath(full, path).replace(os.sep, "/"), st.st_size, st.st_mtime_ns))
     digest = hashlib.sha256()
-    files = (p for p in path.rglob("*") if p.is_file() and not SKIP_DIRS & set(p.relative_to(path).parts))
-    for item in sorted(files):
-        digest.update(item.relative_to(path).as_posix().encode() + b"\0" + file_digest(item).encode() + b"\n")
+    for rel, size, mtime in sorted(items):
+        digest.update(f"{rel}\0{size}\0{mtime}\n".encode())
     return digest.hexdigest()
 
 
@@ -208,7 +215,19 @@ def _flip_cache(obj):
     return None
 
 
-def rebase_paths(original_dir, report_path=None) -> list[dict]:
+_applied_rebases: list[dict] = []
+
+
+def applied_rebases() -> list[dict]:
+    """Copies of the entries the last rebase_paths() call returned; empty when none ran in this process.
+
+    Measure helpers read it through sys.modules.get("worldagent_runtime") to report the path a
+    datablock had saved (entry "from") when the runner has already rebased it.
+    """
+    return [dict(entry) for entry in _applied_rebases]
+
+
+def rebase_paths(original_dir, report_path=None, relative_to=None, only=None) -> list[dict]:
     """Point `//` paths of the open (copied) .blend at the candidate's own folder.
 
     Blender resolves `//` against the folder of the file it opened; the runner opens a copy in
@@ -217,15 +236,22 @@ def rebase_paths(original_dir, report_path=None) -> list[dict]:
     domain cache (Mantaflow, FLIP Fluids), an external point cache, a Mesh Cache modifier, a
     cache file, a volume, an image or a movie clip is set to the same path under original_dir,
     in memory only (the file is never saved). Absolute paths are left as they are. Disk point
-    caches (use_disk_cache) always live in `//blendcache_<file name>/`; the runner copies that
-    folder next to the copy before Blender starts, and they are listed here with
+    caches (use_disk_cache) always live in `//blendcache_<file name>/`; the runner links that
+    folder's files next to the copy before Blender starts, and they are listed here with
     read_from_copy true. Linked library paths are not rebased.
 
-    Returns one entry per path: {datablock, property, from, to, exists[, read_from_copy]}.
-    With report_path, also writes {"rebased_paths": [...], "hashes": {path: sha256},
-    "hash_seconds": s} there, where hashes covers every existing rebased cache path the
-    verifier reads in place (not copies, not single images), so the runner can tell whether
-    the verifier changed one.
+    Returns one entry per path: {datablock, property, from, to, exists[, read_from_copy]};
+    applied_rebases() returns them again later in the process.
+    With report_path, also writes {"rebased_paths": [...], "fingerprints": {path: fingerprint},
+    "fingerprint_seconds": s} there, where fingerprints covers every existing rebased cache path
+    the verifier reads in place (not single images) and the candidate's disk point cache folder
+    (its files are hard links), so the runner can tell whether the verifier changed one.
+
+    With relative_to (a folder), each path is instead set to a `//` path relative to relative_to
+    that names the same place under original_dir: bin/promote.py saves the final scene this way
+    as a copy that resolves from the case root. Disk point caches cannot be renamed and are
+    listed with read_from_copy as before. With only (a set of (datablock, property) pairs, as
+    in the entries), other paths are left as they are and not listed.
     """
     import bpy  # only available inside Blender
 
@@ -240,14 +266,21 @@ def rebase_paths(original_dir, report_path=None) -> list[dict]:
         value = owner[key] if not hasattr(owner, "bl_rna") else getattr(owner, key)
         if not (isinstance(value, str) and value.startswith("//")):
             return
-        new = target(value)
+        name = f"{datablock.bl_rna.identifier}[{_quoted(datablock.name)}]"
+        if only is not None and (name, prop) not in only:
+            return
+        new = resolved = target(value)
+        if relative_to is not None:
+            new = "//" + os.path.relpath(resolved, os.path.abspath(str(relative_to))).replace(os.sep, "/")
+            if value.endswith(("/", "\\")) and not new.endswith("/"):
+                new += "/"
         if hasattr(owner, "bl_rna"):
             setattr(owner, key, new)
         else:
             owner[key] = new
-        checked = os.path.dirname(new) if folder else new
-        entries.append({"datablock": f"{datablock.bl_rna.identifier}[{_quoted(datablock.name)}]", "property": prop,
-                        "from": value, "to": new, "exists": os.path.exists(new)})
+        checked = os.path.dirname(resolved) if folder else resolved
+        entries.append({"datablock": name, "property": prop, "from": value, "to": new,
+                        "exists": os.path.exists(resolved)})
         if cache:
             cache_paths.append(checked)
 
@@ -271,9 +304,12 @@ def rebase_paths(original_dir, report_path=None) -> list[dict]:
         if cache.use_external:
             rebase(datablock, f"{prop}.filepath", cache, "filepath", cache=True)
         elif cache.use_disk_cache:
+            if only is not None and (f"{datablock.bl_rna.identifier}[{_quoted(datablock.name)}]", prop) not in only:
+                continue
             entries.append({"datablock": f"{datablock.bl_rna.identifier}[{_quoted(datablock.name)}]", "property": prop,
                             "from": f"//blendcache_{stem}", "to": disk_cache, "exists": os.path.isdir(disk_cache),
                             "read_from_copy": True})
+            cache_paths.append(disk_cache)
     for collection in (bpy.data.cache_files, bpy.data.volumes, bpy.data.images, bpy.data.movieclips):
         for block in collection:
             if block.library is not None or getattr(block, "packed_file", None) is not None:
@@ -285,9 +321,70 @@ def rebase_paths(original_dir, report_path=None) -> list[dict]:
             sequence = source == "SEQUENCE" or getattr(block, "is_sequence", False)
             rebase(block, "filepath", block, "filepath", cache=not single_image, folder=sequence)
 
+    if relative_to is None:
+        _applied_rebases[:] = [dict(entry) for entry in entries]
     if report_path is not None:
         started = time.time()
-        hashes = {p: hash_path(p) for p in dict.fromkeys(cache_paths) if os.path.exists(p)}
-        atomic_json(Path(report_path), {"rebased_paths": entries, "hashes": hashes,
-                                        "hash_seconds": round(time.time() - started, 3)})
+        prints = {p: fingerprint(p) for p in dict.fromkeys(cache_paths) if os.path.exists(p)}
+        atomic_json(Path(report_path), {"rebased_paths": entries, "fingerprints": prints,
+                                        "fingerprint_seconds": round(time.time() - started, 4)})
     return entries
+
+
+def scene_signature(ignore=()) -> dict:
+    """Static fingerprint of the open .blend, for telling a re-saved copy from the file it came from.
+
+    Counts every bpy.data collection; per object its type, data, parent, world matrix, modifier
+    stack and particle systems; per mesh a hash of its vertex positions and faces; per scene its
+    frame range, fps and camera; and every `//`-capable path rebase_paths() visits (absolute or
+    relative), except the (datablock, property) pairs in ignore. No frame is stepped: evaluating
+    a fluid domain whose cache is not marked baked would simulate and write into its cache folder.
+    """
+    import bpy
+
+    def num(x) -> str:
+        v = round(float(x), 6)
+        return f"{(0.0 if v == 0 else v):.6f}"
+
+    counts = {}
+    for attr in dir(bpy.data):
+        coll = getattr(bpy.data, attr, None)
+        if isinstance(coll, bpy.types.bpy_prop_collection):
+            counts[attr] = len(coll)
+    objects = {}
+    for obj in bpy.data.objects:
+        objects[obj.name] = [obj.type, obj.data.name if obj.data is not None else None,
+                             obj.parent.name if obj.parent is not None else None,
+                             " ".join(num(c) for row in obj.matrix_world for c in row),
+                             [[m.name, m.type] for m in obj.modifiers],
+                             [[p.name, p.settings.name] for p in obj.particle_systems]]
+    meshes = {}
+    for mesh in bpy.data.meshes:
+        digest = hashlib.sha256(" ".join(num(c) for v in mesh.vertices for c in v.co).encode())
+        digest.update(" ".join(str(i) for poly in mesh.polygons for i in poly.vertices).encode())
+        meshes[mesh.name] = digest.hexdigest()
+    scenes = {scene.name: [scene.frame_start, scene.frame_end, scene.render.fps, scene.render.fps_base,
+                           scene.camera.name if scene.camera is not None else None] for scene in bpy.data.scenes}
+    ignore = {tuple(pair) for pair in ignore}
+    paths = {}
+    for obj in bpy.data.objects:
+        for mod in obj.modifiers:
+            if mod.type == "FLUID" and mod.fluid_type == "DOMAIN":
+                paths[(f"Object[{_quoted(obj.name)}]",
+                       f"modifiers[{_quoted(mod.name)}].domain_settings.cache_directory")] = \
+                    mod.domain_settings.cache_directory
+            elif mod.type == "MESH_CACHE":
+                paths[(f"Object[{_quoted(obj.name)}]", f"modifiers[{_quoted(mod.name)}].filepath")] = mod.filepath
+        flip = _flip_cache(obj)
+        if flip is not None:
+            owner, key = flip
+            paths[(f"Object[{_quoted(obj.name)}]", "flip_fluid.domain.cache.cache_directory")] = \
+                owner[key] if not hasattr(owner, "bl_rna") else getattr(owner, key)
+    for datablock, prop, cache in _point_caches(bpy):
+        paths[(f"{datablock.bl_rna.identifier}[{_quoted(datablock.name)}]", f"{prop}.filepath")] = \
+            [cache.filepath, cache.use_external, cache.use_disk_cache]
+    for collection in (bpy.data.cache_files, bpy.data.volumes, bpy.data.images, bpy.data.movieclips):
+        for block in collection:
+            paths[(f"{block.bl_rna.identifier}[{_quoted(block.name)}]", "filepath")] = block.filepath
+    return {"counts": counts, "objects": objects, "meshes": meshes, "scenes": scenes,
+            "paths": {f"{d} {p}": v for (d, p), v in sorted(paths.items()) if (d, p) not in ignore}}

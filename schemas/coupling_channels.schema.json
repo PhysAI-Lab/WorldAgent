@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldagent/schemas/coupling_channels.schema.json",
+  "title": "Coupling channel table",
+  "description": "Shape of schemas/coupling_channels.json. Every entry ships with evidence.",
+  "type": "object",
+  "required": ["description", "kinds", "inputs", "no_channel", "channels"],
+  "properties": {
+    "description": { "type": "string", "minLength": 1 },
+    "kinds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "inputs": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "no_channel": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["channel", "from", "to", "provides", "approximation", "order", "blender", "evidence"],
+        "properties": {
+          "channel": { "type": "string", "minLength": 1 },
+          "from": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "to": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "provides": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "approximation": { "type": "boolean" },
+          "order": { "enum": ["driver_first", "none"] },
+          "blender": { "type": "string", "minLength": 1 },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "ref"],
+              "properties": {
+                "kind": { "enum": ["probe", "source", "doc", "test"] },
+                "ref": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
