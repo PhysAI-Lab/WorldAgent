@@ -107,11 +107,12 @@ A time budget written in the request to `run` takes precedence over the setting 
 
 These are checks in the plugin's tools and hooks, not instructions the agent is trusted to follow.
 
-- **Only measured passes count.** A pass needs a runner report and the hashes of everything it measured: the candidate, the verifier, the caches, the spec and the measurement library. The gate re-hashes them, so any later change makes the row `stale`.
-- **The final scene is re-measured.** `promote` runs every verifier again on the exact file it installs and checks the file's hash. A hook blocks every other attempt to write `scene_final.blend`. An existing final scene is moved aside, never deleted.
-- **Every row is measurable.** The spec audit rejects a row that names no measured quantity. Every distance or penetration tolerance states its basis: by default the larger of 5 pixels at the final resolution at that distance and the solver's own resolution. A smaller value is allowed only when the request asks for it, and size-relative tolerances are given as a ratio of the object's size.
+- **Only measured passes count.** A pass needs a runner report and the hashes of everything it measured: the candidate, the verifier, the inputs passed with `--input` (such as caches), the spec and the measurement library. The gate re-hashes them, so any later change makes the row `stale`. Caches the runner only rebases are checked for changes during the run.
+- **The final scene is re-measured.** `promote` runs every verifier again on the exact file it installs and checks the file's hash. A hook blocks every other attempt to write `scene_final.blend` or `scene_final_portable.blend`. An existing final scene is moved aside, never deleted. When the candidate's relative cache paths would point elsewhere from the case root, promote also writes `scene_final_portable.blend`, a copy with only those paths rewritten. It reopens that copy in a fresh Blender and checks that each path reaches the same folder as before and that nothing else changed. `scene_final.blend` stays byte-identical to the measured file.
+- **Every row is measurable.** The spec audit rejects a row that names no measured quantity. Every distance or penetration tolerance states its basis: by default the larger of 5 pixels at that distance and the solver's own resolution. The 5 pixels are taken at the final resolution scaled up to a longer side of at least 1920 px, so a low test resolution does not loosen tolerances. A smaller value is allowed only when the request asks for it, size-relative tolerances are given as a ratio of the object's size, and a threshold taken from an outcome the request states (basis `outcome`) names that clause. An outcome may loosen a length tolerance but never tighten it: an outcome length also states the 5-pixel and solver lengths and must be at least the larger of them.
 - **Solver choices are justified.** Every object names its physical class and the Blender system that simulates it. A system that is not the preferred one for that class needs a reason backed by measured reports, and the gate and promote list every such object for review.
-- **Changed requirements are listed.** When a row's verifier, a case module it imports, its pass condition or its tolerances change after a failed measurement, the gate and promote list it. The spec is frozen the first time its audit passes, and every later change to beats, objects (including their sizes) or layout is listed too. These lists do not block anything; they show you what to review.
+- **Changed requirements are listed.** When a row's verifier, a case module it imports, its pass condition or its tolerances change after a failed measurement, the gate and promote list it. The spec is frozen the first time its audit passes with a requirements matrix that covers every beat, together with each row's pass condition, tolerances and measures. Every later change to beats, objects (including their sizes), layout or those row fields is listed too. Changes to how the scene is built (which solver or input drives an object or beat) are listed separately from changes to what it must show. These lists do not block anything; they show you what to review.
+- **Coupled solvers follow a declared graph.** When objects are simulated by two or more Blender systems, the spec audit requires a solver graph: each edge must use a channel Blender actually provides between those two systems (listed in `schemas/coupling_channels.json`), approximations and scripted transfers must say what they assume, the bake order must put every driver first, and every cross-solver effect a story beat claims must have an edge or be marked not achievable. The gate and promote list the approximations and omitted reactions for review.
 - **A case is `limited` only after it is measured.** The tool that records a `limited` result refuses until every row except the render rows has been measured on the chosen candidate.
 - **"Done" means promoted.** If the agent says it is finished while a case it worked on has not been promoted, a hook stops it once and lists the rows that do not pass.
 - **Thresholds live in the rows.** The measurement helpers have no built-in pass thresholds. Every number comes from the row's pass condition and its `tolerances` or `measures`, where you can read it.
@@ -128,7 +129,8 @@ The write guard is a guard against mistakes, not a security boundary.
 ├── media/               final renders and the final movie (final_<stamp>.mp4)
 ├── previews/            preview renders
 ├── .work/               candidates, caches and logs
-└── scene_final.blend    written only by promote
+├── scene_final.blend    written only by promote
+└── scene_final_portable.blend   promote's copy whose relative cache paths resolve from here (only when needed)
 ```
 
 `python3 bin/case_trace.py show <case_dir>` prints the case history: every measurement, spec change and refinement attempt, with what was measured after each attempt.
@@ -143,9 +145,10 @@ skills/                  scene-simulation (main skill and references) and the si
 hooks/                   session report, final-scene write guard, completion check
 bin/                     spec audit, runner, gate, promote, limit, render tool, environment check, case trace
 lib/worldagent_measure/  measurement helpers that verifiers use inside Blender: contact, scale, numerical,
-                         support, navigability, liquid, solver_mesh, causal, shot, gas, deformable,
-                         render, rigid_setup
-schemas/                 JSON schemas for the world spec and the requirements matrix
+                         support, navigability, liquid, solver_mesh, causal, shot, gas, particles,
+                         deformable, systems, coupling, render, rigid_setup
+schemas/                 JSON schemas for the world spec and the requirements matrix, solver classes,
+                         coupling channels
 scripts/                 case setup, layout check, FLIP Fluids checksum
 tests/                   unit tests, Blender tests and end-to-end test scenes
 ```
@@ -169,6 +172,15 @@ uv run --no-project --with jsonschema python -m unittest discover -s tests -p 't
 ```
 
 Tests that need Blender are skipped when it is not found, and the FLIP Fluids tests are skipped without `WORLDAGENT_FLIP_PATH`. `tests/e2e/run_batch.py` runs the test scenes in `tests/e2e/cases.json` end to end through Claude Code or Codex and writes a summary table; see its `--help`.
+
+`tests/e2e/smoke_cases.json` has one very small scene per solver class (rigid body, cloth, FLIP liquid, gas, Newton particles, SPH granular, soft body, and a rigid body driving FLIP): 2 seconds at 24 fps, 320x180, 8 samples, procedural geometry. Run it with either host:
+
+```bash
+python3 tests/e2e/run_batch.py --agent claude --plugin-dir . --cases tests/e2e/smoke_cases.json --budget-hours 1 --out <dir>
+python3 tests/e2e/run_batch.py --agent codex --cases tests/e2e/smoke_cases.json --budget-hours 1 --out <dir>
+```
+
+Add `--only smoke_gas,smoke_softbody` to run some of them. A case may set an `environment` map of `WORLDAGENT_*` settings (here the small render resolution and sample count) that the runner adds to the agent's environment. The FLIP cases need the FLIP Fluids add-on; without it their liquid rows are `blocked`.
 
 ## Not included
 

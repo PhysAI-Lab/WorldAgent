@@ -31,7 +31,7 @@ Arguments: `$ARGUMENTS` — optionally `--case <case_dir>`, then the user's exac
    - every row with its verdict, and the first failure for any row that does not pass;
    - the render: device, samples, frame count, the `media/` folder, and the movie;
    - every row in `contract_changes`, with what changed (verifier copies, case modules, `pass_predicate`, `tolerances`, `measures`, world spec);
-   - what `spec_baseline` in the gate report lists as changed since the spec was frozen at the first passing spec audit;
-   - every object in `solver_deviations`, with its reason, and every entry in promote's `final_relative_paths` (relative paths `scene_final.blend` would resolve to a different place);
+   - what `spec_baseline` in the gate report lists as changed since the spec and rows were frozen at the first passing spec audit (`diff.rows`: rows added, removed, or with a changed `pass_predicate`, `tolerances`, or `measures`; `diff.implementation`: changed object `solver_owner`, `allowed_inputs`, `solver_owned_outputs` or beat `owner`, `allowed_inputs`, listed apart from requirement changes);
+   - every object in `solver_deviations`, with its reason, and every entry in promote's `final_relative_paths` (relative paths `scene_final.blend` would resolve to a different place), and `portable_scene` (the delivery copy `scene_final_portable.blend` with those paths rewritten, or the problem that prevented it);
    - assets used, approximations, and anything blocked or skipped.
    Call the case done only if promote exited 0.

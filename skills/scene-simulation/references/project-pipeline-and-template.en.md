@@ -19,7 +19,7 @@ case/
 `-- .work/                    disposable masters, candidates, caches, frames, logs, backups
 ```
 
-Only `README.md`, `manifest.json`, and a promoted `scene_final.blend` belong as files in the root. Create `previews/`, `media/`, and `source/` only when required. Do not create empty placeholder scripts or reports.
+Only `README.md`, `manifest.json`, a promoted `scene_final.blend`, and promote's `scene_final_portable.blend` (written only when relative cache paths need rewriting) belong as files in the root. Create `previews/`, `media/`, and `source/` only when required. Do not create empty placeholder scripts or reports.
 
 Recommended internal paths:
 
@@ -82,6 +82,7 @@ Recommended manifest shape:
       "prompt_length_chars": 0,
       "required_beat_count": 0,
       "minimum_duration_seconds": 0.0,
+      "requested_duration_seconds": null,
       "duration_basis": [],
       "beats": []
     },

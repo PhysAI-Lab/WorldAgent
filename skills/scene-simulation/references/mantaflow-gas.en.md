@@ -26,6 +26,10 @@ Afterward, the smoke root must remain attached to a real fuel/heat/density sourc
 procedural volume animation, or visibility switch cannot replace Mantaflow output. Once inputs stop, claimed
 gas output evolves through buoyancy, entrainment, diffusion, wind, and boundaries rather than keyed translation.
 
+Keep a keyed Flow's `use_inflow` off until its cause frame and pass that frame to `gas.gas_setup(flows={...})`: a Flow
+active before its allowed frame fails. A GEOMETRY Flow emits only on the cache's first frame, so a delayed source
+must be INFLOW.
+
 ## 2. Runtime Identity, Roles, And Resolvable Scale
 
 Treat Blender build, Mantaflow settings, cache mode, and cache directory as one runtime identity. Record actual
@@ -54,6 +58,12 @@ estimate a voxel-preserving starting resolution with:
 
 Then recheck thin-source coverage, memory, cache, and time steps. The formula never replaces a new probe.
 
+`gas.gas_setup` measures these before the bake: world voxel size per axis, voxels across each emitting Flow and each
+named story length (`features_m`), surface emission in voxels and metres, each Flow's move per substep, and its
+clearance to the six Domain faces. State the minimum voxel counts in the row (`min_source_voxels`,
+`min_feature_voxels`). It also checks the time scale against the spec (`expected_time_scale`, 1 unless the spec
+declares slow motion).
+
 ## 3. Build The Column In Layers
 
 Reuse the causal chain, not absolute values: **wide layered sources -> continuous Data transport -> stable Domain
@@ -71,10 +81,15 @@ with clearance -> Noise only after base flow passes -> sequential-frame, voxel, 
    an engineering approximation rather than extra blast force or measured thermal-fluid behavior.
 4. **Isolate force fields.** Put Gas-shaping Wind and Bullet blast force in separate collections and prove with
    on/off differentials that Wind does not drive rigid bodies, fragments, or props. Spatial falloff is not
-   system isolation.
+   system isolation. Every visible surface the gas must hit is an enabled collision Effector, in the Domain's
+   Effector collection when one is set. A hidden Effector is an air wall unless it is listed in `gas_setup`'s
+   `proxies` as standing for a declared visible obstacle; an undeclared hidden Effector fails. A Flow or Effector
+   outside the Domain or its collection, or with its modifier off in the viewport, emits or collides with nothing
+   and gives no error.
 5. **Prefer a stable fixed Domain.** Fit it around the expected plume path, not only the emitter, with clearance
    above and downwind. Promote Adaptive Domain only after Data/Noise continuity, cache stability, and an
-   interpretable boundary probe. Return to a fixed Domain when density vanishes, flame remains without smoke,
+   interpretable boundary probe. Domain clearance cannot be read from an Adaptive Domain (the grid moves inside
+   it): the wall checks report UNVERIFIED there, so use a fixed Domain when a row measures clearance. Return to a fixed Domain when density vanishes, flame remains without smoke,
    or cache behavior is unstable.
 6. **Manage smoke age explicitly.** Start explosion smoke with Dissolve off so post-source smoke rises, entrains,
    and dilutes naturally. When short-lived fog/steam or fixed-domain accumulation truly requires Dissolve,
@@ -115,6 +130,12 @@ Increase cost in stages:
    sequentially read actual grids, and render the hero camera plus at least two full-Domain axial diagnostics.
    Do not promote while bake, monitor, or required render remains active.
 
+Run `gas.gas_setup` before every bake; it switches the Domain off while it samples frames, so it never simulates or
+writes a cache. Set the cache type to ALL or MODULAR: Blender's default is REPLAY, which `gas_setup` and
+`gas.cache_coverage` refuse, because verifiers read frames out of order and stepping a REPLAY domain simulates it.
+Keep the cache under `<case>/.work/cache/<candidate>/`; a cache elsewhere is reported (`inside_cache_root` false),
+not failed. A `//` path is rebased by the runner.
+
 A cache may report baked/`FINISHED` while the final high-resolution grid is empty or zero. Short-test the
 selected cache mode and format against the current Blender version and read actual content back; never turn
 one cache mode into a cross-version prescription.
@@ -141,8 +162,12 @@ Run across sequential frames in the active gas interval, not only the final fram
    layer is Mantaflow's boundary layer and always reads zero, also where gas leaves through an open face, so
    it proves nothing: measure the guard share in layers 1..`guard_layers` inward from it (`gas.density` and
    `gas.grid_stats` require `guard_layers >= 1`, report each face in `guard_fraction_by_face` and the depth in
-   `guard_depth_m`). With Noise upres the guard layers are noise cells.
-5. Record six boundary modes such as `use_collision_border_*`. Open boundaries permit exit but do not replace
+   `guard_depth_m`). With Noise upres the guard layers are noise cells. `gas.boundary_clearance` reports, per frame
+   and face, the clearance of the significant-density box in voxels and metres, the guard-layer share, and how
+   fast each face of the box moves (`front_speed_m_s`). Take speeds from the density box: `velocity_grid` is in
+   grid units, not m/s. On an Adaptive Domain these wall checks fail with verdict UNVERIFIED.
+5. Record six boundary modes such as `use_collision_border_*`. Border names map to domain-local faces:
+   left/right = x min/max, front/back = y min/max, bottom/top = z min/max. Open boundaries permit exit but do not replace
    clearance; accumulation, flattening, or reflection at a closed face also means the Domain is inadequate.
    Main smoke during the observation window must not rely on deletion or reflection to form its shape.
 6. Rising shell density followed by an unexplained total/side-density drop at an open face indicates deletion.
@@ -193,6 +218,13 @@ Each hard check is only `PASS / FAIL / UNVERIFIED`. A confirmed hard failure fai
 blocked, never washed into `PASS`. Approximation disclosure applies only after boundary safety is directly
 proved, for non-hard uncertainties such as turbulence spectrum or unmeasured material values. It creates no
 additional promotion state and does not relax the parent skill's acceptance result.
+
+Total gas density is not a conserved quantity in Mantaflow: advection, dissipation and the grid's
+numerics change it, and after emission stops it can rise by tens of percent while nothing new is emitted. Do
+not write a row that bounds total density after emission ("total density within +5% once the flow stops").
+Check that emission stopped through the Flow itself: `gas.gas_setup` reports each Flow's `active_intervals`
+(`use_inflow` keyed off at the stop frame), and a density box or density in the source region can show that
+no new gas appears there. Use total density for sudden loss or jumps (`gas.density`), not for conservation.
 
 ## 8. Symptom-Driven Diagnosis
 

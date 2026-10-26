@@ -227,7 +227,11 @@ Core obligations:
 - define the pre-event empty interval, first smoke, sustained supply, rise/widening, dilution, and aftermath,
   and disclose the Gas/Bullet approximation boundary;
 - derive base voxel size from Domain and `resolution_max`, proving multiple voxels across the thinnest critical
-  source axis and continuous sampling of moving sources;
+  source axis and continuous sampling of moving sources (`gas.gas_setup` measures voxels per source and named
+  length, Flow active frames, Effectors, cache type and range before the bake);
+- set the cache type to ALL or MODULAR (Blender's default REPLAY fails `gas_setup` and `gas.cache_coverage`);
+  make every visible obstacle an enabled collision Effector in the Domain's Effector collection, keep each Flow
+  off until its cause frame, and list hidden collision proxies with the obstacle they stand for;
 - use staggered, offset, differently sized sources for short combustion, sustained smoke, and fire rather than
   one spherical source for every stage;
 - separate smoke generation from transport, and isolate Gas Wind from Bullet blast force with collections and
@@ -236,7 +240,8 @@ Core obligations:
 - never treat baked/`FINISHED`, file count, or an attractive hero camera as proof of cache content, valid Noise,
   or safe boundaries;
 - after reopening, read evaluated density/flame grids sequentially and record significant AABB, six-face
-  clearance/shells, total-density proxy, centroid, boundary modes, and `PASS / FAIL / UNVERIFIED` (`gas.density` measures total density and the share at the Domain walls);
+  clearance/shells, total-density proxy, centroid, boundary modes, and `PASS / FAIL / UNVERIFIED` (`gas.cache_coverage`: the cache read is the one baked; `gas.density`: total density
+  and the share at the Domain walls; `gas.boundary_clearance`: six-face clearance);
 - distinguish solver boundary deletion, material/exposure invisibility, and camera crop; unreadable hard checks
   block promotion;
 - create and completely bake a new cache after any source, Domain, transport, Dissolve, Data/Noise, or cache-mode change.
@@ -256,6 +261,12 @@ Blender has no native DEM:
 - Bullet grains model contact but rarely scale to millions.
 
 Do not describe SPH as engineering-grade dry sand.
+
+Because DDR-SPH has no static friction, an SPH pile spreads and flattens: a cone, a stable slope or an angle of
+repose is not reachable with it. When the request asks for a pile shape, record at spec time that the pile is an
+approximation (in the manifest's `approximations` list and the beat's `pass_predicate`, and tell the user) instead of writing a
+row on the cone height or slope angle that the solver cannot meet. Measure what it can show: grains arrive, stay
+in the region, do not pass through solids, and come to rest.
 
 ### Representation choices
 
@@ -279,6 +290,8 @@ Do not split one dense body into multiple independent SPH systems. They do not s
 - Keep gravity, pressure/repulsion, and noise zero before release.
 - Enable gravity at release and ramp pressure/stiffness over several frames to avoid a dense-system pressure explosion.
 - Excess viscosity/damping creates slurry; insufficient values create a thin disk.
+- A `FLUID / DDR` system with the default stiffness exploded in a 48-frame probe (Blender 5.1.1): particles flew sideways off the floor, not through it. Ramp stiffness and run `particles.numeric_safety` and `particles.crossings` on the first probe bake.
+- A bake ends early when every particle has died; the frames after it read as all dead, not as missing cache (`particles.cache_coverage` reports `ended_all_dead`).
 - SPH lacks static grain friction. If later damping ramps, disabled gravity/pressure, or an internal field creates visual rest, label it as an approximation and verify final inputs return to zero plus velocity stays settled.
 - A force field is a disclosed solver input, not an invisible collision guide.
 
@@ -291,7 +304,7 @@ Do not split one dense body into multiple independent SPH systems. They do not s
 
 ### Validation beyond particle count
 
-Combine:
+Measure with `worldagent_measure.particles`: `cache_coverage` first, `particle_setup` before the bake and in the verifier, then `counts`, `numeric_safety`, `penetration`, `crossings`, `region_containment`, `pre_release_motion` and `settling`. `penetration` and `crossings` take `max_count` and `max_fraction` from the row, so a few stray grains are a stated allowance, not a silent one. Combine:
 
 - target/actual/live counts, solver/system count, and cache state;
 - zero pre-release motion;
@@ -352,8 +365,8 @@ Explicit current-minus-rest displacement is easier to audit than broad, context-
 
 ### Soft-body stability
 
-- Soft Body ignores the scene FPS, like Cloth: one frame simulates `speed × 0.031623 s` (measured in Blender 5.1.1). For real time set `speed = 31.62 × fps_base / fps` (1.3176 at 24 fps, 0.6588 at 48 fps). Do not compensate with extra gravity; verify with a measured free fall.
-- A new Soft Body modifier has Goal enabled, so the body hangs in place. Disable Goal for free fall; use structural edge springs for shape.
+- Soft Body ignores the scene FPS, like Cloth: one frame simulates `speed × 0.031623 s` (measured in Blender 5.1.1). For real time set `speed = 31.62 × fps_base / fps` (1.3176 at 24 fps, 0.6588 at 48 fps). Do not compensate with extra gravity; verify with a measured free fall (`deformable.free_fall`; `deformable.soft_body_setup` reports the clock ratio).
+- A new Soft Body modifier has Goal enabled, so the body hangs in place. Disable Goal (`use_goal`) for free fall; use structural edge springs for shape. Setting `goal_default` to 0 is not enough: Blender clamps it to `[goal_min, goal_max]`, and a goal vertex group with assigned vertices replaces it.
 - A support that is only a PASSIVE rigid body is passed through: Soft Body collides only with objects that have a Collision modifier. Give every support one.
 - A body freezes at its last cached state after the cache end frame, which can look like rest. Make the cache range cover the whole story before measuring a final state.
 - Stronger shape retention comes from pull/push, shear/bend stiffness, damping, tighter automatic steps, and lower error tolerance.
@@ -361,6 +374,16 @@ Explicit current-minus-rest displacement is easier to audit than broad, context-
 - Connect decorative closed components to the main body with a small number of hidden structural edges when needed.
 - Give thin assets a non-degenerate solver thickness/core without creating unacceptable render-surface offset.
 - Change fall orientation or displayed scale before blindly increasing stiffness; an upright bed or aircraft is an unnecessarily hard contact case.
+
+### Setup check before the bake
+
+Run `deformable.soft_body_setup` on the rest frame before every bake and again in the verifier. It fails only on structure:
+
+- Blender keeps Soft Body above every non-deform modifier, because it needs original data. Only deform modifiers (Armature, Hook, Displace) can come before it, so the simulation mesh is the base mesh they deform; subdivide in the mesh itself, not with a modifier. A modifier before Soft Body that is enabled differently in viewport and render fails.
+- Goal pins no vertex of a body the spec says falls freely; no other solver runs on the object; every support has an enabled Collision modifier and is in the collision collection when one is set; the point cache covers the story frames.
+- When visible meshes are driven from the simulation object, the simulation mesh is closed and each visible mesh has a bound Surface or Mesh Deform (or another modifier reading the simulation object).
+
+It reports springs, steps, mass, media friction, gravity weight and the clock (`time.clock_ratio_5_1`) without judging them. Rows judge them through `measures`: a measured free fall alone is not enough, because a raised gravity weight makes the fall pass while springs and damping run slow. `solver_distance_m` (the largest support collision thickness) is the solver part of contact and transfer tolerances. Measure the visible mesh with `deformable.transfer_deviation` even when Surface Deform is bound: a bound mesh can still sit far from its target.
 
 ### Visible-world collision and no-air-wall policy
 
@@ -403,8 +426,20 @@ animation/force/source input
 
 State one-way vs two-way behavior and omitted reactions. For example, a cannon may be visual-only while a motor launches a finite-mass cannonball.
 
+Write the graph into the spec as `topology.solver_graph` whenever objects are simulated by two or more Blender systems or the case lists `coupled`; the spec audit fails without it (`solver_graph_required`).
+
+- **Nodes.** One node per solver bake, listing the object contracts it simulates (all with one `blender_system`), plus input nodes (`input: keyed` or `force_field`) for keyed motion, kinematic bodies, motors and force fields. Fluid nodes name their `domain`.
+- **Edges.** One edge per one-way transfer: `from`, `to`, a `channel`, the driver `objects`, and `omitted_reactions` (what the driven side would push back and does not, e.g. buoyancy on the crate). Take the channel from `schemas/coupling_channels.json`, which lists what each channel joins and provides; the audit rejects any other pair (`solver_edge`). Two solvers never drive each other both ways: one is always baked first. FLIP Fluids drives nothing.
+- **Approximations.** `field_flow` (a Fluid Flow force field reading a baked Mantaflow domain) is an approximation: it translates a rigid body by the grid velocity at its centre, with no torque, no buoyancy and no reaction on the fluid. State that in `approximation`, and judge it by the measured motion. A `scripted_transfer` (a case script reads one bake and writes an input of the next) must state `method` (the script path and what it computes) and `assumptions` (`coupling_disclosure`). Never add an undeclared motor, force field or keyed input to produce a reaction.
+- **Claims.** Each beat lists its cross-node effects in `interactions` (`cause` node, `effect` object, `kind`). Every interaction must be provided by an edge, or marked `achievable: false` with a reason agreed with the user (`coupling_claim`); its covering row is then `blocked`. An object resting on another node's object needs an edge between the two nodes (`coupling_support`).
+- **Bake order.** `bake_order` lists every node once, drivers first (`bake_order`).
+
+The gate and promote list the approximations, not-achievable claims and omitted reactions for review. `worldagent_measure.coupling.graph_links` checks the built scene against the graph.
+
 ### Cache order
 
+- Bake in `topology.solver_graph.bake_order`. Wrap each node's bake in `coupling.record_bake(case, candidate, manifest, node, frames=...)` (recommended): it writes `reports/bakes/<candidate>.json` with a digest of the node's output and of each driver at bake time. A driven solver reads its driver's cache, so rebake every later node after a driver changes.
+- `coupling.bake_evidence` proves the order from the first evidence available: the bake record while it still matches the caches, then for a FLIP obstacle the meshes FLIP exported, then cache file times. An edge with none is reported as unverified, and the row decides whether that fails.
 - Make driving animation/boundaries deterministic before dependent bakes.
 - Validate Bullet motion before baking Cloth attached through Hooks.
 - Preserve repeatable Armature/kinematic evaluation during Cloth or Soft Body bake.

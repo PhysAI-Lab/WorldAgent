@@ -53,7 +53,7 @@ Do not choose a fixed frame count and squeeze the prompt into it. First decompos
 
 - `prompt_length_chars`, narrative-clause count, required entity/zone count, `required_beat_count`, and the reason for its `long_form` classification;
 - for every beat: exact prompt clause, stable id, prerequisite/order/simultaneity, physics owner, allowed inputs, expected solved state, frame interval, minimum physical and readable duration, camera/numeric evidence, and pass predicate;
-- `preroll_seconds`, `establishment_seconds`, per-beat time, transitions, `aftermath_seconds`, total `minimum_duration_seconds`, FPS, resulting `frame_range`, and any explicit user duration;
+- `preroll_seconds`, `establishment_seconds`, per-beat time, transitions, `aftermath_seconds`, total `minimum_duration_seconds`, FPS, resulting `frame_range`, and any duration the request states (`requested_duration_seconds`);
 - `story_coverage`: status and actual frame interval per clause, evidence paths, first failure frame, omission/order/occlusion cause, and corrective action.
 
 For every causal event, also record the trigger predicate/frame, initiating object or input, first contact or
@@ -64,15 +64,15 @@ A response that begins before its trigger is a hard causal failure. Motion, inta
 transforms, and a complete cache are necessary mechanical health checks but do not pass a beat when the actor never reaches
 the target or the requested result never occurs.
 
-Classify a prompt as `long_form` when any condition holds: approximately 800 CJK characters or 500 whitespace-delimited words; at least four required recognizable story beats; at least three events/zones that need separate presentation; or explicit sustained wording such as continuous, gradual, repeated, sequential, final, or complete process. These are lower-bound triggers and must not be used to downgrade an actually multi-stage story.
+Classify a prompt as `long_form` when any condition holds: approximately 800 CJK characters or 500 whitespace-delimited words; at least four required recognizable story beats; at least three events/zones that need separate presentation; or explicit sustained wording about the physical events, such as continuous, gradual, repeated, sequential, or complete process. Wording about delivery or rendering, such as "Final 1920x1080 Cycles render", never makes a request long-form. These are lower-bound triggers and must not be used to downgrade an actually multi-stage story.
 
-When the user has not supplied a duration sufficient for the complete story, a long-form contract uses these minimum allocations: at least 2 seconds for establishment, at least 1.5 readable seconds for each major beat's setup/action/result window, at least 0.5 seconds between non-simultaneous beats, at least 2 seconds of final state/aftermath, and at least 12 seconds total. Use the greater of 12 seconds and:
+A duration stated in the request takes precedence: record it as `requested_duration_seconds` and derive `frame_range` from it. The long-form minimum allocations apply only when the request states no duration. Then a long-form contract uses these minimum allocations: at least 2 seconds for establishment, at least 1.5 readable seconds for each major beat's setup/action/result window, at least 0.5 seconds between non-simultaneous beats, at least 2 seconds of final state/aftermath, and at least 12 seconds total. Use the greater of 12 seconds and:
 
 `minimum_duration_seconds = preroll + establishment + sum(max(physical_duration_i, readable_duration_i)) + transitions + aftermath`
 
 Static descriptive clauses do not justify invented physics events, but their required establishing, inspection, or spatial-reveal time still belongs in the shot and duration budget. Adding a required sequential beat must never reduce total duration. Beats may overlap only when the prompt makes them simultaneous and each remains readable in both visual and numeric evidence.
 
-Preserve the requested FPS and plausible physical timescale by increasing total frames. Do not lower FPS, raise `time_scale`, compress forces/sources, subsample, interpolate, or speed up in post to fit a long story into a short clip. If an explicit user duration is shorter than the complete-story minimum, report the conflict and request adjustment or keep the result `blocked`; never silently omit a beat.
+Preserve the requested FPS and plausible physical timescale by increasing total frames. Do not lower FPS, raise `time_scale`, compress forces/sources, subsample, interpolate, or speed up in post to fit a long story into a short clip. If a stated duration is shorter than the complete-story minimum, keep the stated duration, set each beat's `minimum_readable_seconds` to what fits its interval (a physical event such as a 0.1 s squash lasts its physical duration), report the conflict to the user, and record it under `limitations`; never silently omit a beat. `spec_audit.py` checks that every beat's interval lasts its `minimum_readable_seconds` at the contract FPS (`readable_duration`) and that `frame_range` lasts `minimum_duration_seconds`, and at least 12 seconds for a `long_form` story without `requested_duration_seconds` (`duration`).
 
 Acceptance requires `story_coverage.coverage_ratio == 1.0`, empty `missing_beats`, `partial_beats`, `order_violations`, `causal_order_violations`, and `unreadable_beats`, and cache/media end frames that reach the contracted final state. A solved beat hidden by the camera, cut in editing, or implied only through smoke, lighting, titles, or other presentation effects is still uncovered. Promotion requires `story_validation.passed == true`.
 
@@ -105,7 +105,7 @@ case/
 `-- .work/                    candidates, caches, frames, logs, backups
 ```
 
-Only `README.md`, `manifest.json`, and the promoted `scene_final.blend` belong as root files. Create optional directories only when the task needs them. Keep build, probe, bake, validation, and render entrypoints under `src/`; keep stage evidence under `reports/`; keep all disposable work under `.work/`. Run the plugin's `scripts/check_case_layout.py` before handoff.
+Only `README.md`, `manifest.json`, the promoted `scene_final.blend`, and promote's `scene_final_portable.blend` (written only when relative cache paths need rewriting) belong as root files. Create optional directories only when the task needs them. Keep build, probe, bake, validation, and render entrypoints under `src/`; keep stage evidence under `reports/`; keep all disposable work under `.work/`. Run the plugin's `scripts/check_case_layout.py` before handoff.
 
 `manifest.json` is the canonical record for the exact prompt, contract, story contract and coverage matrix, status, input assets and stable identifiers, seed, units, gravity, frame range, solver settings, object roles, density/mass, collision shapes and masks, artifact paths, camera, renderer, actual reopened RNA values, approximations, limitations, and validation summary. Keep detailed measurements in `reports/` instead of creating more root files.
 
