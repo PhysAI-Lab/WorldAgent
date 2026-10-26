@@ -29,8 +29,9 @@ Arguments: `$ARGUMENTS` — optionally `--case <case_dir>`, then the user's exac
 8. **Report** briefly:
    - promoted or not, the final scene and its SHA-256, and the gate report path;
    - every row with its verdict, and the first failure for any row that does not pass;
-   - the render: device, samples, frame count, and the `media/` folder;
-   - every row in `contract_changes`, with what changed (verifier copies, `pass_predicate`, world spec);
+   - the render: device, samples, frame count, the `media/` folder, and the movie;
+   - every row in `contract_changes`, with what changed (verifier copies, case modules, `pass_predicate`, `tolerances`, `measures`, world spec);
    - what `spec_baseline` in the gate report lists as changed since the spec was frozen at the first passing spec audit;
+   - every object in `solver_deviations`, with its reason, and every entry in promote's `final_relative_paths` (relative paths `scene_final.blend` would resolve to a different place);
    - assets used, approximations, and anything blocked or skipped.
    Call the case done only if promote exited 0.

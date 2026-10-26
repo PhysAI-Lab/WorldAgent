@@ -396,7 +396,7 @@ Before the first modeling pass, decompose the prompt into individually testable 
 
 - the requirement text and category (target-asset realism, scene, physics, story/time, materials, camera, media, or delivery);
 - observable evidence (numeric probes, BVH/penetration scans, reopen validation, locked-camera stills, or native frames);
-- pass threshold, current status, failed frame/object, and next corrective action;
+- pass threshold (`pass_predicate` in words, with its numbers in `tolerances` and `measures`; see the skill's Verification and Promotion step 3), current status, failed frame/object, and next corrective action;
 - first-discovered version, most recent validation version, and final candidate path.
 
 “Looks close” and “the render is polished” are not passing states. The object being simulated must be listed separately as `hero_physics_target`; its quality cannot be diluted by background detail, lighting, smoke, depth of field, or other decoration.

@@ -99,6 +99,38 @@ Recommended manifest shape:
       "acceptance": []
     }
   },
+  "object_contracts": [
+    {
+      "name": "crate_a",
+      "role": "falling_crate",
+      "solver_owner": "Bullet rigid body",
+      "simulation_class": "rigid_body",
+      "blender_system": "bullet_rigid_body",
+      "solver_choice_reason": null,
+      "visible_mesh": "crate_a",
+      "simulation_mesh": "crate_a",
+      "dimensions_m": [0.6, 0.4, 0.4],
+      "initial_support": "shelf",
+      "collision": {"representation": "BOX, measured fit 1 mm", "margin_m": 0.001},
+      "acceptance": ["zero interpenetration across full range"]
+    }
+  ],
+  "topology": {"regions": [], "edges": []},
+  "requirements_matrix": [
+    {
+      "id": "penetration",
+      "text": "Zero interpenetration across the full range",
+      "category": "physics",
+      "covers": ["fall", "settle"],
+      "pass_predicate": "penetration depth <= 3 mm for every reachable pair on every frame",
+      "tolerances": [
+        {"quantity": "penetration depth, every reachable pair", "basis": "screen", "value_m": 0.003,
+         "screen_m": 0.003, "solver_m": 0.001,
+         "derivation": "5 px at 1920x1080 from the camera at 1.6 m = 3.0 mm; Bullet collision margin 1 mm"}
+      ],
+      "status": "unknown"
+    }
+  ],
   "classification": {
     "indoor": false,
     "outdoor": true,

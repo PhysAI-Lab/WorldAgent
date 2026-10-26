@@ -29,6 +29,12 @@ Solver-generated collapse means debris transforms are not hand-keyed. Legitimate
 - Dense stacks often need zero or very small additional collision margins to avoid a frame-1 separation explosion.
 - Split Impulse reduces velocity injection from penetration correction but cannot repair serious initial overlap.
 - Choose the collision shape from the topology the story needs. CONVEX_HULL fills holes and concavities, so rings, chain links, hooks, and handles collide as solid discs and cannot interlock (`rigid_setup.collision_shape_fit` measures how far a hull or primitive stands out of the visible mesh). Do not then disable their collisions and join them with constraints: that replaces the requested contact with joints. For bodies that must hook or interlock, try a COMPOUND shape built from convex pieces that keep the hole open; this is the usual Bullet approach but has not yet been validated in this plugin's test runs, so probe it first. MESH (GImpact) on interlocked concave bodies diverged within a few frames in a plugin test run (Blender 5.1.2), even at 100 substeps. If neither holds, report the case as limited rather than changing the physics.
+- For complex library assets (luggage, crates, furniture), build the Bullet collider in this order and measure each step with `rigid_setup.collision_shape_fit`:
+  1. a primitive (BOX, CAPSULE, CYLINDER) or CONVEX_HULL, when its protrusion out of the visible mesh is within the row's tolerance;
+  2. otherwise a compound of a few primitives or convex hulls parented as children of the body (Bullet COMPOUND);
+  3. otherwise a convex decomposition. Decomposition tools can crash or run for many minutes on detailed meshes, so try the simpler shapes first.
+
+  Use MESH shapes only for PASSIVE bodies. Record the chosen representation and its measured fit in the object contract. A collider larger than the visible mesh makes bodies react before visible contact.
 
 ### Projectile launch and collision filtering
 
@@ -93,6 +99,12 @@ semantic completion.
 - If Subdivision supplies solver density, use a fixed level before Cloth, name it `SolverSubdivision`, and record its level and evaluated topology entering Cloth; applying that topology to the mesh is also valid. View-dependent or frame-varying adaptive subdivision must not feed Cloth. Any solver-topology change requires a new candidate and cache.
 - A typical stack is `Armature/Hook -> SolverSubdivision (optional) -> Cloth -> Solidify -> RenderSubdivision`. Fixed-topology Mask/Smooth modifiers may precede Cloth when documented.
 - Numerically validate the base solver surface and then the final Solidify/RenderSubdivision surface. Penetration of either surface fails.
+
+### Simulation clock
+
+- Cloth ignores the scene FPS: one frame simulates `time_scale × 0.031623 s` (the Speed Multiplier; measured in Blender 5.1.1), whatever `scene.render.fps` is. For real-time motion set `time_scale = 31.62 × fps_base / fps` (1.3176 at 24 fps, 0.6588 at 48 fps). Soft Body behaves the same way (see §6).
+- Do not compensate a wrong clock with extra gravity or force. Verify the clock with a measured free fall of a test object against `g t² / 2`.
+- A cloth stays at its last cached state after the cache end frame, which can look like rest. Make the cache range cover the whole story before reading a final state.
 
 ### High-resolution solve and convergence
 
@@ -340,7 +352,10 @@ Explicit current-minus-rest displacement is easier to audit than broad, context-
 
 ### Soft-body stability
 
-- Disable Goal for free fall; use structural edge springs for shape.
+- Soft Body ignores the scene FPS, like Cloth: one frame simulates `speed × 0.031623 s` (measured in Blender 5.1.1). For real time set `speed = 31.62 × fps_base / fps` (1.3176 at 24 fps, 0.6588 at 48 fps). Do not compensate with extra gravity; verify with a measured free fall.
+- A new Soft Body modifier has Goal enabled, so the body hangs in place. Disable Goal for free fall; use structural edge springs for shape.
+- A support that is only a PASSIVE rigid body is passed through: Soft Body collides only with objects that have a Collision modifier. Give every support one.
+- A body freezes at its last cached state after the cache end frame, which can look like rest. Make the cache range cover the whole story before measuring a final state.
 - Stronger shape retention comes from pull/push, shear/bend stiffness, damping, tighter automatic steps, and lower error tolerance.
 - Self-collision can destabilize complex multipart surfaces. If disabled, prove cohesion with constant topology, connected-component metrics, edge-stretch limits, bounded growth, and internal cohesion edges.
 - Connect decorative closed components to the main body with a small number of hidden structural edges when needed.

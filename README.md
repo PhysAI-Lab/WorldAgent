@@ -4,11 +4,11 @@ WorldAgent is a plugin for [Claude Code](https://claude.com/claude-code) and [Co
 
 ## How it works
 
-1. **Spec.** Your request becomes a world spec (story beats with frame windows, a contract for every object, and the scene layout) and a requirements matrix: one row per hard requirement, each with a numeric pass condition. A spec audit checks that the spec is consistent before anything is built.
+1. **Spec.** Your request becomes a world spec (story beats with frame windows, a contract for every object, and the scene layout) and a requirements matrix: one row per hard requirement, each with a measured quantity and a numeric pass condition. A spec audit checks that the spec is consistent before anything is built.
 2. **Build and bake.** The agent builds the scene in Blender, using a local asset library first when one is configured, and bakes a candidate `.blend`.
 3. **Verify.** Each row has a verifier script. The plugin's runner executes it in a fresh Blender process on a copy of the candidate and records the result. A row becomes `pass` only through the runner.
 4. **Refine.** For a failing row, the agent changes the scene or the bake, one cause at a time, and measures again. It does not change the requirement.
-5. **Render and promote.** The final sequence is rendered with Cycles at full resolution, and the render is checked like any other row. `promote` measures every row again on that exact candidate and installs it as `scene_final.blend` only if all of them pass.
+5. **Render and promote.** The final sequence is rendered with Cycles at full resolution and encoded into a movie, and both are checked like any other row. `promote` measures every row again on that exact candidate and installs it as `scene_final.blend` only if all of them pass.
 
 A case that cannot meet every requirement ends as `limited`. It is rendered so you can see it, its failing rows are reported with their measured values, and it is not promoted.
 
@@ -18,6 +18,7 @@ A case that cannot meet every requirement ends as `limited`. It is rendered so y
 - **Blender 5.1.**
 - **Python 3.** The plugin's scripts and hooks use only the standard library.
 - **A render device** for the final Cycles render. The default is NVIDIA OptiX. CUDA, HIP, Metal, oneAPI, any available GPU, or CPU can be configured instead.
+- **ffmpeg and ffprobe** for encoding and checking the final movie. Without them the movie and its row are reported as `blocked`, never as passed.
 - **FLIP Fluids 1.8.8 add-on (optional).** It is not included. Install your own licensed copy. Without it, FLIP requirements are reported as `blocked`, never as passed, and the plugin does not substitute another liquid solver.
 
 ## Installation
@@ -56,7 +57,7 @@ The session starts with a short report on the machine: which Blender and FLIP Fl
 | `/worldagent:new` | `$worldagent:new` | `<case_dir> <scene request>` | Creates the case, writes the world spec and the requirements matrix, and runs the spec audit until it passes. |
 | `/worldagent:bake` | `$worldagent:bake` | `<case_dir> [notes]` | Builds the scene and bakes a new candidate, then stops so you can look at it. |
 | `/worldagent:verify` | `$worldagent:verify` | `<case_dir> [candidate] [row ids]` | Runs each row's verifier through the runner, writing any missing verifier from the row's pass condition, and reports a verdict per row. |
-| `/worldagent:render` | `$worldagent:render` | `<case_dir> [candidate] [--preview --frames <list>]` | Renders the final sequence (or preview frames) and checks the render. |
+| `/worldagent:render` | `$worldagent:render` | `<case_dir> [candidate] [--preview --frames <list>]` | Renders the final sequence (or preview frames), encodes the final movie with `render_candidate.py --encode`, and checks both. |
 | `/worldagent:promote` | `$worldagent:promote` | `<case_dir> [candidate] [--replace]` | Measures every row again and installs `scene_final.blend` only if all pass. |
 | `/worldagent:run` | `$worldagent:run` | `[--case <case_dir>] <scene request>` | Runs every step without stopping for approval, within a time budget. With `--case` it resumes an existing case. |
 
@@ -79,10 +80,12 @@ Every setting is optional. Anything you leave empty is detected or uses its defa
 | Asset library folder | `WORLDAGENT_ASSET_LIBRARY` | None; assets are built procedurally |
 | Time budget for `run`, in hours | `WORLDAGENT_TIME_BUDGET_HOURS` | `3` |
 | Memory budget per Blender process, in GB | `WORLDAGENT_MEMORY_BUDGET_GB` | The skill's built-in memory rules |
+| ffmpeg executable for the final movie (environment variable only) | `WORLDAGENT_FFMPEG` | `ffmpeg` on `PATH` |
+| ffprobe executable for checking the movie (environment variable only) | `WORLDAGENT_FFPROBE` | Next to ffmpeg, then `ffprobe` on `PATH` |
 
 Where to set them:
 
-- **Claude Code:** `/plugin configure worldagent`, or the environment variables above.
+- **Claude Code:** `/plugin configure worldagent`, or the environment variables above. ffmpeg and ffprobe are set only through their environment variables or `PATH`; without them the movie is reported as `blocked`.
 - **Codex:** the environment variables above, or a config file at `~/.config/worldagent/config.json` (`$XDG_CONFIG_HOME/worldagent/config.json` when that is set; `WORLDAGENT_CONFIG_FILE` points to another file). Its keys are `blender_path`, `flip_addon_path`, `flip_installer`, `render_device`, `render_resolution`, `render_samples`, `asset_library_path`, `memory_budget_gb` and `time_budget_hours`:
 
   ```json
@@ -106,10 +109,12 @@ These are checks in the plugin's tools and hooks, not instructions the agent is 
 
 - **Only measured passes count.** A pass needs a runner report and the hashes of everything it measured: the candidate, the verifier, the caches, the spec and the measurement library. The gate re-hashes them, so any later change makes the row `stale`.
 - **The final scene is re-measured.** `promote` runs every verifier again on the exact file it installs and checks the file's hash. A hook blocks every other attempt to write `scene_final.blend`. An existing final scene is moved aside, never deleted.
-- **Changed requirements are listed.** When a row's verifier or pass condition changes after a failed measurement, the gate and promote list it. The spec is frozen the first time its audit passes, and every later change to beats, objects (including their sizes) or layout is listed too. These lists do not block anything; they show you what to review.
+- **Every row is measurable.** The spec audit rejects a row that names no measured quantity. Every distance or penetration tolerance states its basis: by default the larger of 5 pixels at the final resolution at that distance and the solver's own resolution. A smaller value is allowed only when the request asks for it, and size-relative tolerances are given as a ratio of the object's size.
+- **Solver choices are justified.** Every object names its physical class and the Blender system that simulates it. A system that is not the preferred one for that class needs a reason backed by measured reports, and the gate and promote list every such object for review.
+- **Changed requirements are listed.** When a row's verifier, a case module it imports, its pass condition or its tolerances change after a failed measurement, the gate and promote list it. The spec is frozen the first time its audit passes, and every later change to beats, objects (including their sizes) or layout is listed too. These lists do not block anything; they show you what to review.
 - **A case is `limited` only after it is measured.** The tool that records a `limited` result refuses until every row except the render rows has been measured on the chosen candidate.
 - **"Done" means promoted.** If the agent says it is finished while a case it worked on has not been promoted, a hook stops it once and lists the rows that do not pass.
-- **Thresholds live in the rows.** The measurement helpers have no built-in pass thresholds. Every number comes from the row's pass condition, where you can read it.
+- **Thresholds live in the rows.** The measurement helpers have no built-in pass thresholds. Every number comes from the row's pass condition and its `tolerances` or `measures`, where you can read it.
 
 The write guard is a guard against mistakes, not a security boundary.
 
@@ -120,7 +125,7 @@ The write guard is a guard against mistakes, not a security boundary.
 ├── manifest.json        world spec, requirements matrix, status, asset sources, approximations
 ├── src/                 build scripts and verifiers (verify_<row>.py)
 ├── reports/             runner reports, gate reports, render reports, frozen spec, case trace
-├── media/               final renders
+├── media/               final renders and the final movie (final_<stamp>.mp4)
 ├── previews/            preview renders
 ├── .work/               candidates, caches and logs
 └── scene_final.blend    written only by promote

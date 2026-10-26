@@ -133,9 +133,15 @@ Run across sequential frames in the active gas interval, not only the final fram
 3. Compute significant-density index AABB, peak, total-density proxy `sum(density) * voxel_volume`, centroid,
    and occupied volume. Compute clearance to all six faces in layers and physical units. Transform voxel
    centers with the Domain world matrix for world coordinates; never assume zero rotation or unit scale.
+   Mantaflow's `cell_size` is in the Domain's local units: multiply it by the Domain object's scale for world
+   metres (`gas.grid_stats` reports `cell_size_m` this way).
 4. For the outer face and inward guard layers on all six sides, record maximum density, density sum,
    significant-voxel count, and fraction of total density. Derive guard depth from voxel size, velocity, time
-   step, and the prior physical thickness rather than hard-coding one layer or one integer.
+   step, and the prior physical thickness rather than hard-coding one layer or one integer. The outermost
+   layer is Mantaflow's boundary layer and always reads zero, also where gas leaves through an open face, so
+   it proves nothing: measure the guard share in layers 1..`guard_layers` inward from it (`gas.density` and
+   `gas.grid_stats` require `guard_layers >= 1`, report each face in `guard_fraction_by_face` and the depth in
+   `guard_depth_m`). With Noise upres the guard layers are noise cells.
 5. Record six boundary modes such as `use_collision_border_*`. Open boundaries permit exit but do not replace
    clearance; accumulation, flattening, or reflection at a closed face also means the Domain is inadequate.
    Main smoke during the observation window must not rely on deletion or reflection to form its shape.

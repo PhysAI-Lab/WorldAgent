@@ -15,8 +15,9 @@ blender --background --factory-startup <copy of candidate.blend> --python-exit-c
 
 - Blender opens a **copy** of the candidate in a fresh process with factory settings. Enable any add-on you need (e.g. FLIP Fluids) inside the script.
 - `lib/` is on `sys.path`, so `import worldagent_measure` works.
+- Before your script runs, the runner points every `//` path of the copy (Mantaflow and FLIP cache folders, point caches, mesh caches, images, volumes) at the candidate's own folder, so caches stored relative to the candidate are found. Do not set cache folders in the verifier. The report lists what was changed in `rebased_paths`; the candidate's folder is also in `$WORLDAGENT_CANDIDATE_DIR`. A disk point cache (`blendcache_<name>/`) next to the candidate is copied with it.
 - Read your arguments with `worldagent_measure.verifier.parse_args()`. Write one JSON object to `--out` with `verifier.write_result()` or `verifier.write_blocked()`.
-- Do not modify the candidate. The runner compares its hash before and after the run.
+- Do not modify the candidate or a cache it reads (no bake or free). The runner compares their hashes before and after the run; if a rebased cache changed, the row becomes `unknown` ("verifier changed a cache it read: ...").
 - An uncaught exception is a crash. The row becomes `unknown`, with the log tail kept in the report.
 
 ## 2. Result
@@ -44,7 +45,25 @@ Anything else becomes `unknown`: a pass without measurements, a missing or inval
 
 ## 3. Thresholds
 
-Each row states its own threshold in `pass_predicate` (e.g. "signed gap >= -1e-3 m on every frame"). Use that same threshold in the script. The measurement helpers have no default thresholds. Use a tolerance only to classify floating-point noise, and report it in `measurements` (`simulation-workflow.en.md`, `non-penetration-contract.en.md`).
+Each row states its threshold in `pass_predicate` (text for people) and again in `tolerances[]` or `measures[]`, which the spec audit checks. Use those same numbers in the script; read them from the row rather than retyping them where practical. The measurement helpers have no default thresholds.
+
+A length tolerance (penetration epsilon, contact tolerance, position error) follows the default rule: `value_m = max(screen_m, solver_m)`. `screen_m` is 5 pixels at the final delivery resolution at that distance from the camera; compute it with `scale.pixel_footprint`, which returns metres per pixel at a point:
+
+```python
+from worldagent_measure.scale import pixel_footprint
+screen_m = 5 * pixel_footprint(camera, crate.location, (1920, 1080))  # camera=None: scene camera
+```
+
+`solver_m` is the solver's resolution: the Bullet collision margin for rigid bodies, one cell for grid solvers (`solver_mesh.grid_cell_size`), the collision distance for cloth and soft body. A smaller value needs basis `request` (the request asked for that precision). Numeric tolerances (centre of mass, volume) are a `ratio` of the object's size. These values are set in the spec before any measurement; the tolerance is not an allowance to raise after a fail (`simulation-workflow.en.md`, `non-penetration-contract.en.md`).
+
+Example row fields:
+
+```json
+"tolerances": [{"quantity": "penetration depth crate_a vs floor", "basis": "screen", "value_m": 0.003,
+                "screen_m": 0.003, "solver_m": 0.001,
+                "derivation": "5 px at 1920x1080 from the camera at 4.2 m = 3.0 mm; Bullet margin 1 mm"}],
+"measures": [{"quantity": "crate_a speed, last second", "comparison": "<", "value": 0.05, "unit": "m/s"}]
+```
 
 ## 4. Run it
 
@@ -61,9 +80,9 @@ The runner then:
 
 `input_hashes` covers the candidate, the script itself, every `--input`, the spec part of `manifest.json`, and the shared helper library. If any of them changes later, the gate treats the row as `stale`.
 
-Pass as `--input` everything else the verifier depends on:
-- every bake or cache it reads;
-- every case module it imports (e.g. a shared `src/_common.py`). Only the verifier script itself is hashed automatically.
+Pass as `--input` everything else the verifier depends on, so a change makes the row stale:
+- every bake or cache it reads (for hashing only; the runner already points the copy at it);
+- every case module it imports (e.g. a shared `src/_common.py`). Only the verifier script itself is hashed automatically. The runner keeps a copy of each case-local `.py` input under `reports/trace/inputs/`.
 
 ## 5. Story coverage
 
@@ -89,7 +108,7 @@ Read simulated state from the evaluated scene, never from an object's own proper
 | `gas` | Mantaflow smoke and fire: total density per frame, sudden loss or jump, gas on the domain walls |
 | `rigid_setup` | Rigid body setup Bullet does not report: origin against center of mass, primitive collision shapes against the visible mesh, bodies and constraints outside the rigid body world, keyed active bodies, cache coverage |
 | `deformable` | Cloth and elastic bodies: edge stretch and compression against a rest frame, motion per step (also relative to edge length and cloth collision distance), self-intersection, recovery of the rest shape; cloth setup before the bake (`cloth_setup`: solver mesh entering Cloth, modifier order, settings, colliders) |
-| `render` | Whether a render report from `bin/render_candidate.py` is a final Cycles render at the final resolution (1920x1080 unless the plugin's setting changes it) of every frame of this candidate, on the expected device, with unchanged output files |
+| `render` | Whether a render report from `bin/render_candidate.py` is a final Cycles render at the final resolution (1920x1080 unless the plugin's setting changes it) of every frame of this candidate, on the expected device, with unchanged output files; whether its encoded movie matches those frames (`check_movie`) |
 
 Choosing arguments:
 
@@ -98,12 +117,12 @@ Choosing arguments:
 - **Liquid obstacles.** Pass the meshes the solver voxelizes (e.g. every enabled Mantaflow effector) to `solver_mesh.solver_mesh_validity`, with `cell_size_m=grid_cell_size(domain)` and `min_cells` chosen from `flip-fluids.en.md` §3 item 4 (at least 1; collision walls multiple cells; primary openings and animated obstacles 3–4). Declare `groups` for coverings the solver fills together with their support, such as a carpet on a floor or panels on a wall, derived from the contracts' `initial_support`. Each member must touch another within `group_contact_tol_m`. Thin obstacles that stand alone (doors, paper) are never grouped.
 - **Contact on authored assets.** Authored meshes often join overlapping shells or self-intersect. `contact.penetration` tests each closed shell separately and reports self-intersecting meshes in `self_intersecting_meshes`. A failure whose `first_failure.self_intersecting` is non-empty has an ambiguous depth: fix the asset (make it a valid solid) rather than raising `eps_pen`.
 - **Static architecture.** To treat fixed architecture as one union, pass explicit pairs (moving objects against everything, moving against moving) to `contact.penetration` instead of all pairs, and check the architecture meshes themselves with `solver_mesh`.
-- **Story order.** Measure each beat's key event with `causal.contact_onset`, `motion_onset`, or `region_entry`, then pass the frames to `causal.order` with the beats' `depends_on` pairs and `frame_interval` windows (`causal.story_dependencies(manifest)` reads both). Use `min_lag_frames=1` when the effect must come strictly after its cause; simultaneous cause and effect is a failure the paper calls out. An event that never happens fails, so a skipped beat cannot pass as "in order". For contact between rigid bodies, `contact_tol_m` must cover the sum of the two bodies' collision margins (their visible meshes stop that far apart), and must stay below their starting gap. When `contact_onset` returns `None`, call `causal.closest_approach` to see how close the surfaces came before changing anything.
+- **Story order.** Measure each beat's key event with `causal.contact_onset`, `motion_onset`, or `region_entry`, then pass the frames to `causal.order` with the beats' `depends_on` pairs and `frame_interval` windows (`causal.story_dependencies(manifest)` reads both). Use `min_lag_frames=1` when the effect must come strictly after its cause. Each pair reports a `relation` (`missing`, `effect_before_cause`, `simultaneous`, `effect_after_cause`); a pair on the same sampled frame fails ("cause and effect on the same sampled frame"). Some pairs can share a frame at the delivery fps (impact and squash, contact and splash): list them in `allow_simultaneous=[("impact", "squash")]`, or measure at a higher fps, unless the request states a gap between them. `min_lag_frames=0` accepts the same frame for every pair; prefer listing the pairs. An event that never happens fails, so a skipped beat cannot pass as "in order". For contact between rigid bodies, `contact_tol_m` must cover the sum of the two bodies' collision margins (their visible meshes stop that far apart), and must stay below their starting gap. When `contact_onset` returns `None`, call `causal.closest_approach` to see how close the surfaces came before changing anything.
 - **Coupled systems.** For a pair the spec couples (an impactor and what it pushes, a liquid and a floating body), `causal.response_to_contact` requires the effect to start moving after first contact and within `max_lag_frames`; moving before contact fails. State the coupling direction in the spec; this measures the response, not the reaction force.
-- **Shot coverage.** Pass each beat's key object with the beat's `frame_interval` to `shot.coverage`. The scene camera of each frame is used, so camera switches on markers are followed. Glass and other transparent meshes count as blockers, and volumes cannot be targets: cover a smoke plume through the objects it interacts with, or through its emitter.
-- **Gas.** `gas.density` reads the baked density grid of the evaluated domain; bake first. An unbaked domain reads as zero density, so pass `min_total` whenever the gas must exist. A high `boundary_fraction` means gas pressing on or leaving through the domain walls; whether the loss is visible on camera is a separate `shot.coverage` row.
+- **Shot coverage.** Pass each beat's key object with the beat's `frame_interval` to `shot.coverage`. The scene camera of each frame is used, so camera switches on markers are followed. Only objects that appear in the final render block rays: objects hidden from render, with camera visibility off, only in render-excluded collections, or with volume-only materials (a smoke domain) are passed through and listed in `not_rendered`. Objects hidden in the viewport but rendered are unhidden while measuring (`unhidden_for_test`). A target that is not in the render fails. Glass and other transparent rendered surfaces still count as blockers, and volumes cannot be targets: cover a smoke plume through the objects it interacts with, or through its emitter.
+- **Gas.** `gas.density` reads the baked density grid of the evaluated domain; bake first. An unbaked domain reads as zero density, so pass `min_total` whenever the gas must exist. `guard_layers` is required and must be at least 1: Mantaflow's outermost cell layer always reads zero, so the guard layers start at the second layer from each face (`guard_layers=2` is the second and third). A high `boundary_fraction` means gas pressing on or leaving through the domain walls; `guard_fraction_by_face` shows which face, and `guard_depth_m` the guard depth in metres. `cell_size_m` is in world metres (the domain's object scale applied). Whether the loss is visible on camera is a separate `shot.coverage` row.
 - **Cloth and elastic bodies.** Bake (or step the frames in order) before measuring. Choose `rest_frame` before the load. Read `largest_step_over_collision_distance` before setting `max_step_m`: steps many times the collision distance let cloth tunnel. Use `deformable.recovery` only for bodies that must return to shape after the load is removed.
-- **Render and media.** Render with `${CLAUDE_PLUGIN_ROOT}/bin/render_candidate.py` (see the skill's Stage 6), never with a one-off script: only its report records the candidate hash, device, resolution, frames and file hashes. In the verifier, call `render.check_render_report(<case>/reports/render_<stamp>.json, args.case, expected_device=...)` on the report of the final render, and run the row with that report and its `media/final_<stamp>/` folder as `--input`, so a new render makes the row stale. A check that only looks for image files under `media/` passes on three preview frames; it is not a render check.
+- **Render and media.** Render with `${CLAUDE_PLUGIN_ROOT}/bin/render_candidate.py` (see the skill's Stage 6), never with a one-off script: only its report records the candidate hash, device, resolution, frames and file hashes. In the verifier, call `render.check_render_report(<case>/reports/render_<stamp>.json, args.case, expected_device=...)` on the report of the final render, and run the row with that report and its `media/final_<stamp>/` folder as `--input`, so a new render makes the row stale. For the movie, render with `--encode` (or encode an existing final render with `--encode-report`) and call `render.check_movie(<report>, args.case)` alongside `check_render_report`; pass the report and `media/final_<stamp>.mp4` as `--input`. When ffmpeg or ffprobe is missing, `check_movie` raises `render.MovieToolUnavailable`: catch it and call `verifier.write_blocked()`, so the row is `blocked`, not failed. Do not write an encoding script in the case. A check that only looks for image files under `media/` passes on three preview frames; it is not a render check.
 - **FLIP Fluids.** Call `liquid.enable_flip()` (it finds the add-on through `WORLDAGENT_FLIP_PATH`, which the plugin sets at session start), catch `liquid.FlipUnavailable`, and call `verifier.write_blocked()`. Never measure a Mantaflow substitute.
 
 ## 7. Record what you tried
@@ -125,11 +144,13 @@ A failing row means the scene or the bake is wrong until shown otherwise. Fix th
 - do not replace a helper with a weaker proxy. If a helper reports nothing where you expected a result (for example `causal.contact_onset` returns `None`), find out why: print the measured values on the frames around the event and check the tolerance against the collision margin, the mesh resolution, and how far objects move per frame. Report what you found. Do not switch to a check that no longer measures the requirement, such as comparing positions against where an object started;
 - do not raise a tolerance to cover a measured violation. A penetration epsilon is for coincident contact and floating-point noise only [non-penetration-contract.en.md]. If the solver cannot meet the threshold, the row fails and the case is `limited`; say so;
 - do not change what the row requires: moving a beat's frame window, loosening a `pass_predicate`, or changing an object's collision representation or constraints so that the requested physics no longer happens (for example, joints in place of rings that hang by contact) is changing the request, not fixing the scene. If the requested physics cannot be produced with this solver, the row fails and the case is `limited`; say so;
+- do not raise a row's `tolerances` or loosen its `measures` after a fail; they are frozen with the spec;
 - record the change with `case_trace.py note --row <row_id>`: what the old verifier got wrong, the evidence, and why the new one still checks the row's `pass_predicate`.
 
-The runner keeps a copy of every verifier version it runs under `reports/trace/verifiers/` and records each change in the row's `contract_changes`. The gate and promote list every row whose verifier, `pass_predicate`, or world spec changed after a non-pass result, so the user can see what changed. The list does not change any verdict; it shows the user where to look. The gate's `spec_baseline` entry also compares the world spec with the copy frozen when the spec audit first passed (`reports/spec_baseline.json`), so a spec change made before any row was measured is listed as well.
+The runner keeps a copy of every verifier version it runs under `reports/trace/verifiers/`, and of every case-local `.py` input under `reports/trace/inputs/`, and records each change in the row's `contract_changes` (`pass_predicate_changed`, `tolerances_changed`, `measures_changed`, `spec_changed`, `inputs_changed`). The gate and promote list every row whose verifier, imported case modules, `pass_predicate`, `tolerances`, `measures`, or world spec changed after a non-pass result, so the user can see what changed. The list does not change any verdict; it shows the user where to look. The gate's `spec_baseline` entry also compares the world spec with the copy frozen when the spec audit first passed (`reports/spec_baseline.json`), so a spec change made before any row was measured is listed as well.
 
 ## 8. Examples
 
 - `${CLAUDE_PLUGIN_ROOT}/tests/fixtures/verifiers/verify_box_on_ground.py`: the smallest complete verifier.
 - `${CLAUDE_PLUGIN_ROOT}/tests/fixtures/verifiers/verify_contact_example.py`: a verifier built on `worldagent_measure.contact`.
+- `${CLAUDE_PLUGIN_ROOT}/tests/fixtures/verifiers/verify_final_movie.py`: a media row built on `render.check_movie`.
