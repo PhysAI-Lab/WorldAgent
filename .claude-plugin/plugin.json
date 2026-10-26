@@ -1,6 +1,6 @@
 {
   "name": "worldagent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {"name": "PhysAILab"},
   "license": "MIT",
   "description": "Build physically grounded Blender scenes whose requirements are measured, not claimed: a world spec, per-requirement verifiers run in a fresh Blender process, and a gate that guards the final scene.",
