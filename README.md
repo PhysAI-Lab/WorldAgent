@@ -21,22 +21,56 @@ A case that cannot meet every requirement ends as `limited`. It is rendered so y
 - **ffmpeg and ffprobe** for encoding and checking the final movie. Without them the movie and its row are reported as `blocked`, never as passed.
 - **FLIP Fluids 1.8.8 add-on (optional).** It is not included. Install your own licensed copy. Without it, FLIP requirements are reported as `blocked`, never as passed, and the plugin does not substitute another liquid solver.
 
-## Installation
+## Installation and updates
+
+Each release raises the version in both plugin manifests and is tagged `worldagent--v<version>` (for example `worldagent--v0.3.0`). [CHANGELOG.md](CHANGELOG.md) lists what changed. Both hosts keep a copy of the installed version, so pushing new commits does not change an installed plugin until you update it.
 
 ### Claude Code
+
+Install, in a Claude Code session:
 
 ```
 /plugin install worldagent --marketplace PhysAI-Lab/WorldAgent
 ```
 
+or from your shell:
+
+```bash
+claude plugin install worldagent --marketplace PhysAI-Lab/WorldAgent
+```
+
+Update to the latest release:
+
+```bash
+claude plugin marketplace update worldagent
+claude plugin update worldagent@worldagent
+```
+
+Then restart Claude Code, or run `/reload-plugins` in a session. Claude Code updates a plugin only when its version changes. Automatic updates are off for this marketplace unless you turn them on under `/plugin` → Marketplaces.
+
 ### Codex
+
+Install from your shell:
 
 ```bash
 codex plugin marketplace add PhysAI-Lab/WorldAgent
 codex plugin add worldagent@worldagent
 ```
 
-Start a new Codex session and trust the plugin's hooks in `/hooks`. The hooks report the environment at session start, guard the final scene, and check completion claims. Codex asks again whenever the hooks change.
+To stay on one release instead of following the main branch, add the marketplace at its tag:
+
+```bash
+codex plugin marketplace add PhysAI-Lab/WorldAgent --ref worldagent--v0.3.0
+```
+
+Update to the latest release (or to the release the marketplace is pinned to):
+
+```bash
+codex plugin marketplace upgrade worldagent
+codex plugin add worldagent@worldagent
+```
+
+Start a new Codex session after installing or updating, and trust the plugin's hooks in `/hooks`. The hooks report the environment at session start, guard the final scene, and check completion claims. Codex asks again whenever the hooks change, so an update that changes them needs a new review.
 
 ## Quick start
 
